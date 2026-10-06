@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#314d3c">
+  <meta name="description" content="Bella’s puppy house-training diary. A small, private, offline diary.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Bella's Diary">
+  <title>Bella's Diary</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><div class="brand"><span class="brand-mark" aria-hidden="true">B</span><div><h1>Bella's Diary</h1><p>Puppy house-training diary</p></div></div><div id="summary" class="summary"></div><div class="header-tools"><div class="tabs page-tabs" role="tablist" aria-label="Main view"><button id="diary-page-tab" role="tab" aria-controls="diary-page" aria-selected="true" data-page="diary">Diary</button><button id="stats-page-tab" role="tab" aria-controls="stats-page" aria-selected="false" tabindex="-1" data-page="stats">Stats</button></div><details id="more-menu" class="overflow-menu"><summary aria-label="More options" title="More options">···</summary><div class="menu-panel"><strong>Diary &amp; backups</strong><p>Your entries are saved in this browser.</p><p id="offline-status" class="muted" role="status">Preparing offline use…</p><button id="export-json">Export JSON</button><button id="import-json">Import JSON</button><button id="export-csv">Export CSV</button><button id="clear-demo" class="danger" hidden>Clear demo data</button><input id="import-file" type="file" accept="application/json,.json" hidden></div></details></div></header>
+  <section class="quick" aria-label="Add an event"><div class="quick-pair"><button data-add="wee"><span class="symbol wee"></span> + Wee</button><button data-add="wee" data-location="inside" class="inside-add" aria-label="Record an inside wee accident" title="Record an inside wee accident"><span class="inside-label">Inside</span><span class="accident-example" aria-hidden="true">!</span></button></div><div class="quick-pair"><button data-add="poo"><span class="symbol poo"></span> + Poo</button><button data-add="poo" data-location="inside" class="inside-add" aria-label="Record an inside poo accident" title="Record an inside poo accident"><span class="inside-label">Inside</span><span class="accident-example" aria-hidden="true">!</span></button></div><button data-add="meal"><span class="symbol meal"></span> + Meal</button><button id="custom">Custom entry</button></section>
+  <div id="diary-page" role="tabpanel" aria-labelledby="diary-page-tab">
+  <section class="diary-surface">
+    <div class="section-heading"><h2>When things usually happen</h2><div class="aggregate-controls"><label for="aggregate-window">Window</label><select id="aggregate-window" aria-label="Pattern time window"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option><option value="all">All time</option></select><span id="aggregate-count" class="muted"></span></div></div>
+    <p class="muted bucket-help">Darker = more activity than other hours for that type. Tap a bucket for its count and share.</p>
+    <div id="aggregate"></div>
+    <div class="diary-heading"><h2>Diary</h2><div id="filters" class="filters" aria-label="Filter diary events"><button data-filter="all" aria-pressed="true">All</button><button data-filter="wee" aria-pressed="false">Wees</button><button data-filter="poo" aria-pressed="false">Poos</button><button data-filter="meal" aria-pressed="false">Meals</button><button data-filter="accidents" aria-pressed="false">Accidents</button></div><span id="demo-label" class="demo-label" hidden>Illustrative demo data</span><div class="tabs" role="tablist" aria-label="Diary view"><button id="timeline-tab" role="tab" aria-controls="timeline" aria-selected="true" data-tab="timeline">Timeline</button><button id="data-tab" role="tab" aria-controls="data" aria-selected="false" tabindex="-1" data-tab="data">Data</button></div></div>
+    <div class="legend"><span><i class="symbol wee"></i> Wee</span><span><i class="symbol poo"></i> Poo</span><span><i class="symbol meal"></i> Meal</span><span><i class="accident-example">!</i> Inside accident</span><span class="muted">Tap an event to edit</span></div>
+    <div id="timeline" role="tabpanel" aria-labelledby="timeline-tab"></div>
+    <div id="data" role="tabpanel" aria-labelledby="data-tab" hidden></div>
+  </section>
+  </div>
+  <section id="stats-page" class="patterns" role="tabpanel" aria-labelledby="stats-page-tab" hidden><h2>Patterns &amp; statistics</h2><p class="muted">Small clues to help you anticipate the next outing. Based on the whole diary.</p><div id="stats" class="stats"></div><details><summary>How these numbers work</summary><div id="rules"></div></details></section>
+</main>
+<dialog id="editor" aria-labelledby="editor-title"><form id="event-form"><div class="editor-heading"><h2 id="editor-title">New entry</h2><button type="button" id="close-editor" aria-label="Close editor">×</button></div><label>Event<select name="type"><option value="wee">Wee</option><option value="poo">Poo</option><option value="meal">Meal</option></select></label><div class="form-row"><label>Date<input name="date" type="date" required></label><label>Time<input name="time" type="time" required step="60"></label></div><label id="location-field">Location<select name="location"><option value="outside">Outside</option><option value="inside">Inside accident</option></select></label><label id="consistency-field">Poo consistency<select name="pooConsistency"><option>Firm</option><option selected>Normal</option><option>Soft</option><option>Diarrhoea</option></select></label><div id="meal-fields"><label>Food / description<input name="mealFood" maxlength="200" placeholder="e.g. Chicken &amp; kibble"></label><label>Amount<input name="mealAmount" maxlength="100" placeholder="e.g. 120 g"></label></div><label>Note <span class="muted">(optional)</span><textarea name="note" rows="3" maxlength="2000"></textarea></label><div class="editor-actions"><button type="button" id="delete-event" class="danger">Delete</button><button type="button" id="cancel-editor">Cancel</button><button type="submit" class="primary">Save entry</button></div></form></dialog>
+<div id="message" role="status" aria-live="polite" hidden></div>
+<noscript>This diary needs JavaScript enabled to save and display events.</noscript>
+</body>
+</html>
