@@ -17,7 +17,7 @@ Then open http://localhost:8080. The Python process stays running in the termina
 - `index.html`: accessible page and shared event editor.
 - `styles.css`: responsive layout with a shared timeline plotting grid.
 - `app.js`: diary behavior, filtering, rendering, editing, statistics and backups.
-- `storage.js`: asynchronous whole-diary repository, currently backed by localStorage.
+- `storage.js`: asynchronous whole-diary repository, native IndexedDB persistence and legacy migration.
 - `manifest.json`: standalone installation metadata.
 - `sw.js`: complete offline app-shell cache.
 - `icons/`: 192px and 512px PNG icons and SVG favicon.
@@ -36,11 +36,17 @@ Overlapping marks intentionally share one central lane at their actual times, wi
 
 ## Storage and backups
 
-The app reads and writes the complete diary through the asynchronous `diaryRepository` interface in `storage.js`. Its current implementation uses this browser's localStorage and keeps the existing `bellaDiary.store` key and version 1 shape (version, events, demo-cleared flag) unchanged. The separate `bellaDiary.aggregateWindow` preference still stores the selected pattern window in localStorage. This boundary allows a different persistence implementation later without changing diary behavior; IndexedDB migration and cloud sync are not included. An event's datetime is a local wall-clock ISO string `YYYY-MM-DDTHH:mm`; existing events keep their recorded calendar time if you later change timezone. Storage survives normal refresh, close/reopen and Home Screen relaunch in the same browser storage context. Browser profiles, devices and some installation contexts may have separate storage. Private browsing or clearing site data can remove the diary: export backups regularly.
+The app reads and writes the complete diary through the asynchronous `diaryRepository` interface in `storage.js`. Active diary data lives in this browser's native IndexedDB database `bellaDiary`, version 1. The `events` object store has one unchanged event record per `id`; the `meta` object store is keyed by `key` and holds `schemaVersion`, `demoCleared`, `initialized` and `eventOrder`. The order metadata preserves the existing event sequence, including JSON export order. Each save replaces events and metadata in a single transaction and is successful only when that transaction completes.
+
+On first use of IndexedDB, an existing `bellaDiary.store` localStorage diary is parsed and passed through the app's existing validation before migration. Only a successful transaction marks IndexedDB initialized. Later launches use IndexedDB directly. The original localStorage value is deliberately left untouched as a rollback snapshot: new events, edits and imports do not update it. A fresh browser with neither diary seeds the usual demo through the repository once; clearing demo data remains permanent across reloads. Initialization checks inside the write transaction prevent two starting windows from overwriting each other's first diary.
+
+The separate `bellaDiary.aggregateWindow` preference remains in localStorage. Other diary windows refresh after BroadcastChannel save notifications when available, and when focused or made visible. Saves within one window are queued so rapid recording keeps each entry. Whole-diary replacement still means simultaneous edits in different windows can overwrite one another; conflict handling belongs to a later sync stage. There is no cloud sync or account system.
+
+An event's datetime is a local wall-clock ISO string `YYYY-MM-DDTHH:mm`; existing events keep their recorded calendar time if you later change timezone. Storage survives normal refresh, close/reopen and Home Screen relaunch in the same browser storage context. Browser profiles, devices and some installation contexts may have separate storage. Private browsing or clearing site data can remove the diary: JSON export remains the supported user backup, so export regularly. The retained legacy snapshot becomes stale after migration and is not a current backup.
 
 Export JSON includes version 1, an export timestamp and every event. Import validates structure, dates, types, locations, consistency, text limits and unique IDs, then **replaces the whole diary after confirmation**. Bad imports leave the diary intact. Version 1 timezone-qualified ISO datetimes are converted to this device's local calendar time; local strings keep their wall-clock time. Imported demo provenance is retained. Exports include all events regardless of filters. CSV uses quoted values, a UTF-8 BOM and formula-safe text for spreadsheet use. JSON is the lossless restore format; CSV import is not supported.
 
-Failed writes leave the current diary unchanged and show an error. Unreadable existing storage is never overwritten: the app blocks mutations until storage is repaired/accessible. Export before changing browser storage settings; if the saved JSON itself is damaged, recover the raw `bellaDiary.store` value through browser developer tools before clearing it.
+Failed writes and transaction aborts leave both the committed database and current in-memory diary unchanged and show an error. IndexedDB open failures, unavailable storage, corrupt diaries and migration failures block mutations without seeding demo data or overwriting the legacy snapshot. An incomplete database is treated as an error. Export before changing browser storage settings; for recovery, preserve the IndexedDB data and any raw `bellaDiary.store` rollback value through browser developer tools before clearing storage.
 
 ## Offline and iPad installation
 
@@ -51,6 +57,10 @@ After the first successful online load, wait for **Ready for offline use**. The 
 On iPad Safari, serve the static directory from a suitable HTTPS origin, open it, then choose Share → Add to Home Screen. Plain HTTP at a computer's LAN IP is not a suitable secure origin for service workers; `localhost` on iPad refers to the iPad itself. Installation should be checked on the target iPad. Browser storage may be evicted, so an installed PWA is not a substitute for backups.
 
 For app updates, bump `CACHE` in `sw.js` whenever shell files change. The new worker precaches the new shell before activation, removes only old Bella's Diary shell caches, and never touches diary storage. Reload after the update activates. The app makes no external requests.
+
+## Persistence acceptance checks
+
+Run `python -m http.server 8137 --bind 127.0.0.1` in this directory, then open `http://127.0.0.1:8137/tests/indexeddb.html` and run the checks. The dependency-free browser suite uses real IndexedDB and the production app. It resets only that disposable test origin and refuses to run elsewhere. After the online checks pass, stop the server with Ctrl+C and use the offline-check button in the already open test page. The suite covers migration and rollback retention, first-run demo behavior, recording/editing/deleting, backups, failures, multiple windows and cached offline loading/writes. Test files are not part of the service-worker shell. Run these checks in Safari on the target iPad as well as a desktop browser.
 
 ## Statistics rules
 

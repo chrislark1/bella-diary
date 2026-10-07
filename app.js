@@ -79,22 +79,27 @@ function validateEvents(input) {
 let store = {version:1, demoCleared:false, events:[]};
 let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
 let storageBlocked = false;
+let mutationQueue = Promise.resolve();
 
 function notify(text) {
   $('message').textContent = text; $('message').hidden = false;
   clearTimeout(messageTimer); messageTimer = setTimeout(() => {$('message').hidden = true;}, 5500);
 }
 
+function validateStore(saved) {
+  if (!saved || saved.version !== 1 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
+  return {...saved, events:validateEvents(saved.events)};
+}
+
 async function loadStore() {
   try {
-    const saved = await diaryRepository.load();
+    const saved = await diaryRepository.load(validateStore);
     if (saved !== null) {
-      if (saved.version !== 1 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
-      store = {...saved, events:validateEvents(saved.events)};
+      store = validateStore(saved);
     } else {
       const initialStore = {version:1, demoCleared:false, events:demoWeek()};
-      await diaryRepository.save(initialStore);
-      store = initialStore;
+      await diaryRepository.save(initialStore, {initializeOnly:true});
+      store = validateStore(await diaryRepository.load(validateStore));
     }
   } catch (error) {
     // Never overwrite unreadable saved data or claim it has been saved.
@@ -103,12 +108,23 @@ async function loadStore() {
   }
 }
 
-async function commit(events, demoCleared = store.demoCleared) {
-  if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
-  const next = {version:1, demoCleared, events};
-  try {await diaryRepository.save(next);}
-  catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
-  store = next; render(); return true;
+function commit(updateEvents, demoCleared) {
+  // Compute each mutation after the previous save finishes, preserving rapid taps.
+  const pending = mutationQueue.then(async () => {
+    if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
+    const events = typeof updateEvents === 'function' ? updateEvents(store.events) : updateEvents;
+    const next = {version:1, demoCleared:demoCleared ?? store.demoCleared, events};
+    try {await diaryRepository.save(next);}
+    catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
+    store = next; render(); return true;
+  });
+  mutationQueue = pending.catch(() => {});
+  return pending;
+}
+
+function refreshStore() {
+  // Cross-window reads share the queue so they cannot replace a pending local save.
+  mutationQueue = mutationQueue.then(async () => {await loadStore(); render();});
 }
 
 function filteredEvents() {
@@ -239,7 +255,7 @@ async function quickAdd(type, location = 'outside') {
   if (type === 'meal') {event.mealFood = ''; event.mealAmount = '';}
   else {event.location = location; if (type === 'poo') event.pooConsistency = 'Normal';}
   const visible = activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
-  if (await commit([...store.events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
+  if (await commit(events => [...events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
 }
 
 function editorFields() {
@@ -268,8 +284,8 @@ async function saveEditor(event) {
   // Editing a demo event keeps its provenance until explicitly cleared.
   if (editingId && store.events.find(event => event.id === editingId)?.demo) entry.demo = true;
   try {validateEvents([entry]);} catch (error) {notify(error.message); return;}
-  const events = editingId ? store.events.map(event => event.id === editingId ? entry : event) : [...store.events,entry];
-  if (await commit(events)) {$('editor').close(); notify('Entry saved');}
+  const id = editingId;
+  if (await commit(events => id ? events.map(event => event.id === id ? entry : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
 }
 
 function download(filename,content,type) {
@@ -326,13 +342,14 @@ function connectEvents() {
   $('event-form').elements.type.addEventListener('change',editorFields);
   $('event-form').addEventListener('submit',saveEditor);
   for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click',() => $('editor').close());
-  $('delete-event').addEventListener('click',async () => {if (editingId && confirm('Delete this entry?') && await commit(store.events.filter(event => event.id !== editingId))) {$('editor').close(); notify('Entry deleted');}});
-  $('clear-demo').addEventListener('click',async () => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (await commit(store.events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
+  $('delete-event').addEventListener('click',async () => {const id = editingId; if (id && confirm('Delete this entry?') && await commit(events => events.filter(event => event.id !== id))) {$('editor').close(); notify('Entry deleted');}});
+  $('clear-demo').addEventListener('click',async () => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (await commit(events => events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());
   $('import-file').addEventListener('change',event => importJSON(event.target.files[0]));
-  window.addEventListener('storage',async event => {if (event.key === diaryRepository.key) {await loadStore(); render();}});
-  document.addEventListener('visibilitychange',() => {if (!document.hidden) render();});
+  diaryRepository.subscribe(refreshStore);
+  window.addEventListener('focus',refreshStore);
+  document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
   setInterval(() => {const date = localDate(new Date()); if (date !== lastDate) {lastDate = date; render();}},60000);
