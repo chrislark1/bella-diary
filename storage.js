@@ -5,18 +5,37 @@ const diaryRepository = (() => {
   const DATABASE = 'bellaDiary', LEGACY_KEY = 'bellaDiary.store';
   let opening = null, channel = null;
 
-  function openDatabase() {
+  function openDatabase(upgradeStore) {
     if (!opening) {
       opening = new Promise((resolve, reject) => {
         if (typeof indexedDB === 'undefined') throw new Error('IndexedDB is unavailable.');
-        const request = indexedDB.open(DATABASE, 1);
-        let failed = false;
-        request.onupgradeneeded = () => {
-          const db = request.result;
-          db.createObjectStore('events', {keyPath:'id'});
-          db.createObjectStore('meta', {keyPath:'key'});
+        const request = indexedDB.open(DATABASE, 2);
+        let failed = false, upgradeError;
+        request.onupgradeneeded = event => {
+          const db = request.result, transaction = request.transaction;
+          if (event.oldVersion === 0) {
+            db.createObjectStore('events', {keyPath:'id'});
+            db.createObjectStore('meta', {keyPath:'key'});
+            return;
+          }
+          // Read, validate and replace within the native versionchange transaction.
+          // Schedule writes in the request callback, without an await (Safari-safe).
+          const events = transaction.objectStore('events').getAll();
+          const meta = transaction.objectStore('meta').getAll();
+          let remaining = 2;
+          const upgrade = () => {
+            if (--remaining) return;
+            try {
+              const saved = reconstructDiary(events.result,meta.result);
+              if (saved !== null) {
+                if (typeof upgradeStore !== 'function') throw new Error('Diary schema upgrade is required.');
+                replaceDiary(transaction,upgradeStore(saved));
+              }
+            } catch (error) {upgradeError = error; transaction.abort();}
+          };
+          events.onsuccess = upgrade; meta.onsuccess = upgrade;
         };
-        request.onerror = () => {failed = true; reject(request.error);};
+        request.onerror = () => {failed = true; reject(upgradeError || request.error);};
         request.onblocked = () => {failed = true; reject(new Error('Close other diary windows before upgrading storage.'));};
         request.onsuccess = () => {
           const db = request.result;
@@ -51,6 +70,10 @@ const diaryRepository = (() => {
       requestValue(transaction.objectStore('meta').getAll()),
       transactionDone(transaction)
     ]);
+    return reconstructDiary(events,records);
+  }
+
+  function reconstructDiary(events, records) {
     const meta = new Map(records.map(record => [record.key,record.value]));
     if (meta.get('initialized') !== true) {
       if (events.length || records.length) throw new Error('Diary storage is incomplete.');
@@ -72,18 +95,10 @@ const diaryRepository = (() => {
       let wrote = false, failure;
       transaction.oncomplete = () => resolve(wrote);
       transaction.onabort = () => reject(failure || transaction.error || new Error('Diary transaction aborted.'));
-      const events = transaction.objectStore('events'), meta = transaction.objectStore('meta');
+      const meta = transaction.objectStore('meta');
       const write = () => {
-        try {
-          events.clear(); meta.clear();
-          // add() makes duplicate IDs abort the entire transaction.
-          store.events.forEach(event => events.add(event));
-          meta.put({key:'schemaVersion', value:store.version});
-          meta.put({key:'demoCleared', value:store.demoCleared});
-          meta.put({key:'eventOrder', value:store.events.map(event => event.id)});
-          meta.put({key:'initialized', value:true});
-          wrote = true;
-        } catch (error) {failure = error; try {transaction.abort();} catch {}}
+        try {replaceDiary(transaction,store); wrote = true;}
+        catch (error) {failure = error; try {transaction.abort();} catch {}}
       };
       if (initializeOnly) {
         // Check inside the write transaction so a second launch cannot reseed
@@ -94,6 +109,17 @@ const diaryRepository = (() => {
     });
   }
 
+  function replaceDiary(transaction, store) {
+    const events = transaction.objectStore('events'), meta = transaction.objectStore('meta');
+    events.clear(); meta.clear();
+    // add() makes duplicate IDs abort the entire transaction.
+    store.events.forEach(event => events.add(event));
+    meta.put({key:'schemaVersion', value:store.version});
+    meta.put({key:'demoCleared', value:store.demoCleared});
+    meta.put({key:'eventOrder', value:store.events.map(event => event.id)});
+    meta.put({key:'initialized', value:true});
+  }
+
   function getChannel() {
     if (!channel && typeof BroadcastChannel !== 'undefined') {
       try {channel = new BroadcastChannel('bellaDiary.changes');} catch {}
@@ -102,15 +128,15 @@ const diaryRepository = (() => {
   }
 
   return {
-    async load(validateLegacy) {
+    async load(upgradeStore) {
       try {
-        const db = await openDatabase();
+        const db = await openDatabase(upgradeStore);
         const saved = await readDiary(db);
         if (saved !== null) return saved; // Never use the rollback snapshot once initialized.
         const legacy = localStorage.getItem(LEGACY_KEY);
         if (legacy === null) return null;
-        if (typeof validateLegacy !== 'function') throw new Error('Legacy diary validation is required.');
-        const validated = validateLegacy(JSON.parse(legacy));
+        if (typeof upgradeStore !== 'function') throw new Error('Legacy diary validation is required.');
+        const validated = upgradeStore(JSON.parse(legacy));
         // App validation must finish before any legacy events become authoritative.
         await this.save(validated, {initializeOnly:true});
         return await readDiary(db);

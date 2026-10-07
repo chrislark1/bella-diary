@@ -21,6 +21,9 @@ const escapeHTML = text => String(text ?? '').replace(/[&<>"']/g, char => ({'&':
 const shortDate = date => new Date(`${date}T12:00`).toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'});
 const previousDate = date => {const d = new Date(`${date}T12:00`); d.setDate(d.getDate() - 1); return localDate(d);};
 const uniqueId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+const eventMetadata = (now = new Date().toISOString()) => ({createdAt:now, updatedAt:now, deletedAt:null, mutationId:uniqueId()});
+const isActiveEvent = event => event.deletedAt === null;
+const activeEvents = () => store.events.filter(isActiveEvent);
 const median = values => {if (values.length < MIN_SAMPLES) return null; const a = [...values].sort((a,b) => a-b); const mid = Math.floor(a.length/2); return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;};
 const duration = value => value == null ? '—' : value < 60 ? `${Math.round(value)} min` : `${Math.floor(Math.round(value)/60)} h ${Math.round(value)%60} min`;
 const clockTime = value => value == null ? '—' : `${pad(Math.floor(Math.round(value)/60)%24)}:${pad(Math.round(value)%60)}`;
@@ -37,7 +40,7 @@ function demoWeek(now = new Date()) {
     ];
     schedule.forEach(([type, minute], index) => {
       const adjusted = minute + shift + (index%3)*3;
-      const event = {id:uniqueId(), type, datetime:`${localDate(day)}T${pad(Math.floor(adjusted/60))}:${pad(adjusted%60)}`, note:'', demo:true};
+      const event = {id:uniqueId(), type, datetime:`${localDate(day)}T${pad(Math.floor(adjusted/60))}:${pad(adjusted%60)}`, note:'', demo:true, ...eventMetadata()};
       if (type === 'meal') {event.mealFood = 'Puppy kibble'; event.mealAmount = '80 g';}
       else {event.location = (daysAgo === 5 && index === 4) || (daysAgo === 3 && index === 7) ? 'inside' : 'outside'; if (type === 'poo') event.pooConsistency = daysAgo === 3 ? 'Soft' : 'Normal';}
       if (accident(event)) event.note = 'A little too late getting outside';
@@ -71,12 +74,22 @@ function validateEvents(input) {
       event.location = raw.location;
       if (raw.type === 'poo') {if (!CONSISTENCIES.includes(raw.pooConsistency)) throw new Error('A poo event has an invalid consistency.'); event.pooConsistency = raw.pooConsistency;}
     }
+    const instant = key => {
+      const value = raw[key];
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) throw new Error(`Invalid ${key} UTC timestamp.`);
+      return value;
+    };
+    event.createdAt = instant('createdAt'); event.updatedAt = instant('updatedAt');
+    event.deletedAt = raw.deletedAt === null ? null : instant('deletedAt');
+    if (event.updatedAt < event.createdAt || (event.deletedAt !== null && event.deletedAt > event.updatedAt)) throw new Error('Invalid event modification order.');
+    if (typeof raw.mutationId !== 'string' || !/^[a-z0-9-]{1,200}$/.test(raw.mutationId)) throw new Error('Invalid mutation ID.');
+    event.mutationId = raw.mutationId;
     if (raw.demo === true) event.demo = true;
     return event;
   });
 }
 
-let store = {version:1, demoCleared:false, events:[]};
+let store = {version:2, demoCleared:false, events:[]};
 let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
@@ -87,19 +100,27 @@ function notify(text) {
 }
 
 function validateStore(saved) {
-  if (!saved || saved.version !== 1 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
+  if (!saved || saved.version !== 2 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
   return {...saved, events:validateEvents(saved.events)};
+}
+
+// Legacy upgrades are explicit; current-schema validation never supplies missing metadata.
+function upgradeStore(saved) {
+  if (saved?.version === 2) return validateStore(saved);
+  if (!saved || saved.version !== 1 || typeof saved.demoCleared !== 'boolean' || !Array.isArray(saved.events)) throw new Error('Unrecognised legacy diary.');
+  const now = new Date().toISOString();
+  return validateStore({version:2, demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
 }
 
 async function loadStore() {
   try {
-    const saved = await diaryRepository.load(validateStore);
+    const saved = await diaryRepository.load(upgradeStore);
     if (saved !== null) {
       store = validateStore(saved);
     } else {
-      const initialStore = {version:1, demoCleared:false, events:demoWeek()};
+      const initialStore = {version:2, demoCleared:false, events:demoWeek()};
       await diaryRepository.save(initialStore, {initializeOnly:true});
-      store = validateStore(await diaryRepository.load(validateStore));
+      store = validateStore(await diaryRepository.load(upgradeStore));
     }
   } catch (error) {
     // Never overwrite unreadable saved data or claim it has been saved.
@@ -113,8 +134,8 @@ function commit(updateEvents, demoCleared) {
   const pending = mutationQueue.then(async () => {
     if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
     const events = typeof updateEvents === 'function' ? updateEvents(store.events) : updateEvents;
-    const next = {version:1, demoCleared:demoCleared ?? store.demoCleared, events};
-    try {await diaryRepository.save(next);}
+    const next = {version:2, demoCleared:demoCleared ?? store.demoCleared, events};
+    try {validateStore(next); await diaryRepository.save(next);}
     catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
     store = next; render(); return true;
   });
@@ -127,8 +148,8 @@ function refreshStore() {
   mutationQueue = mutationQueue.then(async () => {await loadStore(); render();});
 }
 
-function filteredEvents() {
-  return store.events.filter(event => activeFilter === 'all' || (activeFilter === 'accidents' ? accident(event) : event.type === activeFilter)).sort((a,b) => b.datetime.localeCompare(a.datetime));
+function filteredEvents(events = activeEvents()) {
+  return events.filter(event => activeFilter === 'all' || (activeFilter === 'accidents' ? accident(event) : event.type === activeFilter)).sort((a,b) => b.datetime.localeCompare(a.datetime));
 }
 
 function streak(events) {
@@ -157,11 +178,11 @@ function markHTML(event) {
   return `<button class="event-mark" data-id="${escapeHTML(event.id)}" style="left:${position(event)}%" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}">${inner}</button>`;
 }
 
-function renderHeader() {
-  const today = store.events.filter(event => dateOf(event) === localDate(new Date()));
-  const metrics = [[new Set(store.events.map(dateOf)).size,'Days tracked'], ...TYPES.map(type => [today.filter(event => event.type === type).length, `Today's ${type === 'wee' ? 'wees' : type === 'poo' ? 'poos' : 'meals'}`]), [streak(store.events),'Days accident-free']];
+function renderHeader(events) {
+  const today = events.filter(event => dateOf(event) === localDate(new Date()));
+  const metrics = [[new Set(events.map(dateOf)).size,'Days tracked'], ...TYPES.map(type => [today.filter(event => event.type === type).length, `Today's ${type === 'wee' ? 'wees' : type === 'poo' ? 'poos' : 'meals'}`]), [streak(events),'Days accident-free']];
   $('summary').innerHTML = metrics.map(([value,label]) => `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`).join('');
-  const hasDemo = store.events.some(event => event.demo);
+  const hasDemo = events.some(event => event.demo);
   $('demo-label').hidden = !hasDemo; $('clear-demo').hidden = !hasDemo;
 }
 
@@ -187,8 +208,8 @@ function renderAggregate(events) {
   }).join('')}</div></div>`).join('');
 }
 
-function renderTimeline(events) {
-  const dates = [...new Set(store.events.map(dateOf))].sort().reverse();
+function renderTimeline(events, allEvents) {
+  const dates = [...new Set(allEvents.map(dateOf))].sort().reverse();
   const groups = new Map(dates.map(date => [date,[]]));
   events.forEach(event => groups.get(dateOf(event)).push(event));
   $('timeline').innerHTML = axisHTML() + (dates.length ? dates.map(date => {
@@ -230,10 +251,10 @@ function statistics(events) {
   return {frequency, interval:median(intervals), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(afterMeal('poo',12))};
 }
 
-function renderStats() {
-  const s = statistics(store.events);
+function renderStats(events) {
+  const s = statistics(events);
   const groups = [
-    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accident-free streak',`${streak(store.events)} days`]]],
+    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accident-free streak',`${streak(events)} days`]]],
     ['Timing', [['Median wee interval',duration(s.interval)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
     ['After a meal', [['Median time to wee',duration(s.mealWee)],['Median time to poo',duration(s.mealPoo)]]]
   ];
@@ -241,8 +262,8 @@ function renderStats() {
 }
 
 function render() {
-  const events = filteredEvents();
-  renderHeader(); renderAggregate(store.events); renderTimeline(events); renderTable(events); renderStats();
+  const allEvents = activeEvents(), events = filteredEvents(allEvents);
+  renderHeader(allEvents); renderAggregate(allEvents); renderTimeline(events,allEvents); renderTable(events); renderStats(allEvents);
   $('timeline').hidden = activeTab !== 'timeline'; $('data').hidden = activeTab !== 'data';
   $('diary-page').hidden = activePage !== 'diary'; $('stats-page').hidden = activePage !== 'stats';
   document.querySelectorAll('[data-page]').forEach(button => {const selected = button.dataset.page === activePage; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
@@ -251,7 +272,7 @@ function render() {
 }
 
 async function quickAdd(type, location = 'outside') {
-  const event = {id:uniqueId(),type,datetime:localDatetime(new Date()),note:''};
+  const event = {id:uniqueId(),type,datetime:localDatetime(new Date()),note:'', ...eventMetadata()};
   if (type === 'meal') {event.mealFood = ''; event.mealAmount = '';}
   else {event.location = location; if (type === 'poo') event.pooConsistency = 'Normal';}
   const visible = activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
@@ -264,7 +285,7 @@ function editorFields() {
 }
 
 function openEditor(id = null) {
-  const event = id ? store.events.find(event => event.id === id) : null;
+  const event = id ? activeEvents().find(event => event.id === id) : null;
   if (id && !event) return;
   editingId = id;
   const form = $('event-form'); form.reset();
@@ -278,14 +299,16 @@ function openEditor(id = null) {
 async function saveEditor(event) {
   event.preventDefault();
   const form = $('event-form'), value = key => form.elements[key].value;
-  const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note')};
+  const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note'), ...eventMetadata()};
   if (entry.type === 'meal') {entry.mealFood = value('mealFood'); entry.mealAmount = value('mealAmount');}
   else {entry.location = value('location'); if (entry.type === 'poo') entry.pooConsistency = value('pooConsistency');}
   // Editing a demo event keeps its provenance until explicitly cleared.
-  if (editingId && store.events.find(event => event.id === editingId)?.demo) entry.demo = true;
+  const existing = editingId ? activeEvents().find(event => event.id === editingId) : null;
+  if (editingId && !existing) {notify('This entry is no longer active.'); return;}
+  if (existing) {entry.createdAt = existing.createdAt; if (existing.demo) entry.demo = true;}
   try {validateEvents([entry]);} catch (error) {notify(error.message); return;}
   const id = editingId;
-  if (await commit(events => id ? events.map(event => event.id === id ? entry : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
+  if (await commit(events => id ? events.map(event => event.id === id && isActiveEvent(event) ? {...entry, createdAt:event.createdAt} : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
 }
 
 function download(filename,content,type) {
@@ -294,13 +317,13 @@ function download(filename,content,type) {
   document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url),10000);
 }
 
-function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:1,exportedAt:new Date().toISOString(),events:store.events},null,2),'application/json');}
+function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),demoCleared:store.demoCleared,events:store.events},null,2),'application/json');}
 
 function exportCSV() {
   const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','note'];
   // Guard against spreadsheet formula execution while retaining a readable text value.
   const cell = value => {let s = String(value ?? ''); if (/^[\s]*[=+@-]/.test(s)) s = "'"+s; return '"'+s.replace(/"/g,'""')+'"';};
-  const lines = [keys.join(','), ...[...store.events].sort((a,b) => b.datetime.localeCompare(a.datetime)).map(event => keys.map(key => cell(key === 'date' ? dateOf(event) : key === 'time' ? event.datetime.slice(11,16) : event[key])).join(','))];
+  const lines = [keys.join(','), ...[...activeEvents()].sort((a,b) => b.datetime.localeCompare(a.datetime)).map(event => keys.map(key => cell(key === 'date' ? dateOf(event) : key === 'time' ? event.datetime.slice(11,16) : event[key])).join(','))];
   download(`bellas-diary-${localDate(new Date())}.csv`,'\uFEFF'+lines.join('\r\n'),'text/csv;charset=utf-8');
 }
 
@@ -309,10 +332,11 @@ async function importJSON(file) {
   try {
     if (file.size > 10*1024*1024) throw new Error('Please choose a JSON backup smaller than 10 MB.');
     const data = JSON.parse(await file.text());
-    if (!data || data.version !== 1) throw new Error('Please choose a version 1 Bella’s Diary JSON backup.');
-    const events = validateEvents(data.events);
-    if (!confirm(`Import ${events.length} events? This REPLACES all ${store.events.length} current entries. Export a backup first if you want to keep them.`)) return;
-    if (await commit(events,true)) notify(`Imported ${events.length} events`);
+    if (!data || ![1,2].includes(data.version)) throw new Error('Please choose a version 1 or 2 Bella’s Diary JSON backup.');
+    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore(data);
+    const events = restored.events, count = events.filter(isActiveEvent).length;
+    if (!confirm(`Import ${count} events? This REPLACES all ${activeEvents().length} current entries. Export a backup first if you want to keep them.`)) return;
+    if (await commit(events,restored.demoCleared)) notify(`Imported ${count} events`);
   } catch (error) {notify(`Import failed: ${error instanceof SyntaxError ? 'This file is not valid JSON.' : error.message}`);}
   finally {$('import-file').value = '';}
 }
@@ -323,7 +347,7 @@ function connectEvents() {
   $('aggregate-window').addEventListener('change',event => {
     activeWindow = event.target.value;
     try {localStorage.setItem(WINDOW_KEY,activeWindow);} catch {notify('Could not save the pattern window on this device.');}
-    renderAggregate(store.events);
+    renderAggregate(activeEvents());
   });
   $('more-menu').addEventListener('click',event => {if (event.target.closest('button')) setTimeout(() => {$('more-menu').open = false;},0);});
   document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click',() => quickAdd(button.dataset.add,button.dataset.location || 'outside')));
@@ -342,7 +366,7 @@ function connectEvents() {
   $('event-form').elements.type.addEventListener('change',editorFields);
   $('event-form').addEventListener('submit',saveEditor);
   for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click',() => $('editor').close());
-  $('delete-event').addEventListener('click',async () => {const id = editingId; if (id && confirm('Delete this entry?') && await commit(events => events.filter(event => event.id !== id))) {$('editor').close(); notify('Entry deleted');}});
+  $('delete-event').addEventListener('click',async () => {const id = editingId; if (id && confirm('Delete this entry?') && await commit(events => {const now = new Date().toISOString(); return events.map(event => event.id === id && isActiveEvent(event) ? {...event, updatedAt:now, deletedAt:now, mutationId:uniqueId()} : event);})) {$('editor').close(); notify('Entry deleted');}});
   $('clear-demo').addEventListener('click',async () => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (await commit(events => events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());

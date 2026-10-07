@@ -10,7 +10,8 @@ const known = {version:1, demoCleared:true, events:[
 ]};
 let passed = 0, onlineFrame;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])) : value;
+const same = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 function check(condition, label) {
   if (!condition) throw new Error(label);
   results.textContent += `\nPASS ${++passed}: ${label}`;
@@ -29,9 +30,37 @@ async function databaseContents() {
     const transaction = db.transaction(['events','meta']);
     const done = new Promise((resolve,reject) => {transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error);});
     const [events,meta] = await Promise.all([requestValue(transaction.objectStore('events').getAll()),requestValue(transaction.objectStore('meta').getAll()),done]);
-    return {events,meta};
+    return {version:db.version,events,meta};
   } finally {db.close();}
 }
+function originalFields(event) {
+  const {createdAt,updatedAt,deletedAt,mutationId,...fields} = event; return fields;
+}
+function upgradedKnown(saved) {
+  return saved.version===2 && saved.demoCleared===known.demoCleared && same(saved.events.map(originalFields),known.events);
+}
+function validMetadata(event) {
+  return ['createdAt','updatedAt'].every(key=>typeof event[key]==='string' && new Date(event[key]).toISOString()===event[key]) && event.updatedAt>=event.createdAt && (event.deletedAt===null || (new Date(event.deletedAt).toISOString()===event.deletedAt && event.deletedAt<=event.updatedAt)) && /^[a-z0-9-]{1,200}$/.test(event.mutationId);
+}
+async function seedStage2(saved) {
+  const request=indexedDB.open('bellaDiary',1);
+  request.onupgradeneeded=()=>{request.result.createObjectStore('events',{keyPath:'id'});request.result.createObjectStore('meta',{keyPath:'key'});};
+  const db=await requestValue(request);
+  try {
+    const tx=db.transaction(['events','meta'],'readwrite');
+    const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});
+    saved.events.forEach(event=>tx.objectStore('events').add(event));
+    for (const [key,value] of Object.entries({schemaVersion:1,demoCleared:saved.demoCleared,eventOrder:saved.events.map(e=>e.id),initialized:true})) tx.objectStore('meta').put({key,value});
+    await done;
+  } finally {db.close();}
+}
+async function importBackup(frame, data) {
+  const win=frame.contentWindow, input=frame.contentDocument.getElementById('import-file'), transfer=new win.DataTransfer();
+  transfer.items.add(new win.File([JSON.stringify(data)],'backup.json',{type:'application/json'}));
+  input.files=transfer.files; input.dispatchEvent(new win.Event('change',{bubbles:true}));
+  await waitFor(()=>input.value==='','import completes'); await win.eval('mutationQueue');
+}
+
 async function reset(legacy) {
   frames.replaceChildren();
   await requestValue(indexedDB.deleteDatabase('bellaDiary'));
@@ -73,8 +102,20 @@ async function run() {
   for (const key of await caches.keys()) if (key.startsWith('bellas-diary-shell-')) await caches.delete(key);
 
   const legacy=JSON.stringify(known,null,2);
-  await reset(legacy); let frame=await start();
-  check(same(state(frame),known),'A: legacy events, fields and order load unchanged');
+  await reset(legacy); await seedStage2(known); let frame=await start();
+  let upgraded=state(frame), upgradedDB=await databaseContents();
+  check(upgradedDB.version===2 && upgradedDB.meta.some(m=>m.key==='schemaVersion' && m.value===2),'A: database and diary schema upgrade from 1 to 2');
+  check(upgradedKnown(upgraded),'A: Stage 2 upgrade preserves IDs, local diary times, order and fields');
+  check(upgraded.events.every(e=>validMetadata(e) && e.createdAt===e.updatedAt && e.deletedAt===null) && new Set(upgraded.events.map(e=>e.createdAt)).size===1,'A: migration assigns one UTC instant and valid change IDs');
+  check(localStorage.getItem(KEY)===legacy,'A: schema upgrade preserves legacy rollback snapshot');
+  await reload(frame);check(same(state(frame),upgraded),'A: loading and rendering do not retimestamp records');
+  await reset(legacy); await seedStage2(known);
+  const beforeUpgradeFailure=await databaseContents();
+  frame=await start("const add=IDBObjectStore.prototype.add;IDBObjectStore.prototype.add=function(value){const req=add.call(this,value);req.addEventListener('success',()=>this.transaction.abort(),{once:true});return req;};");
+  check(blocked(frame) && same(await databaseContents(),beforeUpgradeFailure),'A: failed schema migration rolls back version, events and metadata');
+  await reload(frame);check(upgradedKnown(state(frame)),'A: previous valid database remains recoverable after migration failure');
+  await reset(legacy); frame=await start();
+  check(upgradedKnown(state(frame)),'A: legacy events, fields and order load unchanged');
   let database=await databaseContents();
   check(database.events.length===3 && database.meta.some(m=>m.key==='initialized' && m.value===true),'A: validated diary committed to IndexedDB');
   check(localStorage.getItem(KEY)===legacy,'A: legacy snapshot remains byte-for-byte unchanged');
@@ -87,12 +128,15 @@ async function run() {
   check(same(state(frame),migrated) && !blocked(frame),'A: initialized IndexedDB ignores corrupt legacy snapshot');
 
   await reset(); const starting=await Promise.all([start(),start()]); frame=starting[0];
+  check(state(frame).events.every(e=>validMetadata(e) && e.deletedAt===null),'B: all demo events receive valid metadata');
   check(state(frame).events.length===98,'B: fresh origin seeds seven-day demo');
   check(same(state(starting[0]),state(starting[1])) && (await databaseContents()).events.length===98,'B: simultaneous first launches initialize once');
   const seeded=state(frame); await reload(frame);
   check(same(state(frame),seeded),'B: reload neither duplicates nor regenerates demo');
   frame.contentDocument.getElementById('more-menu').open=true; await click(frame,'#clear-demo');
   await reload(frame);
+  check((await databaseContents()).events.length===0,'B: clearing demo physically purges its records');
+  check(frame.contentDocument.getElementById('demo-label').hidden && frame.contentDocument.getElementById('clear-demo').hidden,'B: demo controls stay hidden after clearing/reload');
   check(state(frame).events.length===0 && state(frame).demoCleared,'B: cleared demo stays cleared after reload');
   check(localStorage.getItem(KEY)===null,'B: fresh IndexedDB diary creates no legacy localStorage copy');
   starting[1].remove();
@@ -102,6 +146,7 @@ async function run() {
     ['[data-add="wee"][data-location="inside"]','wee','inside'],['[data-add="poo"][data-location="inside"]','poo','inside']
   ]) {
     await click(frame,selector); const event=state(frame).events.at(-1); await reload(frame);
+    check(validMetadata(event) && event.createdAt===event.updatedAt && event.deletedAt===null,`C: quick ${location || ''} ${type} gets creation metadata`);
     check(state(frame).events.some(e=>e.id===event.id && e.type===type && e.location===location),`C: quick ${location || ''} ${type} persists`);
   }
   const beforeRapid=state(frame).events.length;
@@ -113,18 +158,34 @@ async function run() {
   form.elements.time.value='09:41'; form.elements.note.value='Custom acceptance record';
   await click(frame,'#event-form button[type="submit"]'); let custom=state(frame).events.at(-1); await reload(frame);
   check(state(frame).events.some(e=>e.id===custom.id && e.note==='Custom acceptance record'),'C: custom entry persists');
+  check(validMetadata(custom) && custom.createdAt===custom.updatedAt && custom.deletedAt===null,'C: custom entry gets creation metadata');
+  await delay(5);
   await click(frame,`#timeline [data-id="${custom.id}"]`); form=frame.contentDocument.getElementById('event-form');
   form.elements.note.value='Edited acceptance record'; await click(frame,'#event-form button[type="submit"]'); await reload(frame);
-  check(state(frame).events.some(e=>e.id===custom.id && e.note==='Edited acceptance record'),'C: edit persists');
+  const edited=state(frame).events.find(e=>e.id===custom.id);
+  check(edited.note==='Edited acceptance record','C: edit persists');
+  check(edited.createdAt===custom.createdAt && edited.updatedAt>custom.updatedAt && edited.deletedAt===null && edited.mutationId!==custom.mutationId,'C: edit preserves ID/creation and advances update/change ID');
   await click(frame,`#timeline [data-id="${custom.id}"]`); await click(frame,'#delete-event'); await reload(frame);
-  check(!state(frame).events.some(e=>e.id===custom.id),'C: deletion persists');
+  const tombstone=state(frame).events.find(e=>e.id===custom.id);
+  check(validMetadata(tombstone) && tombstone.deletedAt!==null && tombstone.deletedAt===tombstone.updatedAt && tombstone.createdAt===custom.createdAt && tombstone.mutationId!==edited.mutationId,'C: deletion retains valid tombstone after reload');
+  check((await databaseContents()).events.some(e=>same(e,tombstone)),'C: tombstone remains in native IndexedDB');
+  check(!frame.contentDocument.querySelector(`#timeline [data-id="${custom.id}"]`) && !frame.contentDocument.querySelector(`#data [data-id="${custom.id}"]`),'C: tombstone disappears from Timeline and Data');
+  const active=state(frame).events.filter(e=>e.deletedAt===null);
+  check(frame.contentWindow.eval('activeEvents().length')===active.length && frame.contentDocument.getElementById('aggregate-count').textContent.endsWith(`${active.length} events`),'C: active boundary excludes tombstone from aggregates');
+  const jsonWithTombstone=state(frame);
+  await importBackup(frame,jsonWithTombstone);await reload(frame);
+  check(same(state(frame),jsonWithTombstone),'C: version 2 import restores tombstones and metadata unchanged');
 
   let win=frame.contentWindow;
   const input=frame.contentDocument.getElementById('import-file'), transfer=new win.DataTransfer();
   transfer.items.add(new win.File([JSON.stringify({version:1,events:known.events})],'backup.json',{type:'application/json'}));
   input.files=transfer.files; input.dispatchEvent(new win.Event('change',{bubbles:true}));
-  await waitFor(()=>same(state(frame),known),'JSON import'); await reload(frame);
-  check(same(state(frame),known),'C: JSON import replaces diary and persists');
+  await waitFor(()=>upgradedKnown(state(frame)),'JSON import'); await reload(frame);
+  check(upgradedKnown(state(frame)) && state(frame).events.every(validMetadata),'C: version 1 JSON import upgrades and persists');
+  const imported=state(frame);
+  // Retain a tombstone for actual export checks.
+  await click(frame,'#timeline [data-id="m-poo"]');await click(frame,'#delete-event');
+  const exportState=state(frame);
   // Exercise real export controls and Blob generation without saving test files.
   win=frame.contentWindow; const downloads=[]; const originalClick=win.HTMLAnchorElement.prototype.click;
   win.HTMLAnchorElement.prototype.click=function(){downloads.push({name:this.download,text:win.fetch(this.href).then(response=>response.text())});};
@@ -132,8 +193,11 @@ async function run() {
   frame.contentDocument.getElementById('more-menu').open=true; await click(frame,'#export-csv');
   win.HTMLAnchorElement.prototype.click=originalClick;
   const json=JSON.parse(await downloads[0].text), csv=await downloads[1].text;
-  check(downloads[0].name.endsWith('.json') && same(Object.keys(json),['version','exportedAt','events']) && json.version===1 && same(json.events,known.events),'C: JSON export preserves version-1 format and event order');
+  check(downloads[0].name.endsWith('.json') && same(Object.keys(json),['version','exportedAt','demoCleared','events']) && json.version===2 && json.demoCleared===exportState.demoCleared && same(json.events,exportState.events),'C: JSON v2 export preserves metadata, tombstones and event order');
   check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,note\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
+  check(!csv.includes('m-poo') && csv.includes('z-wee'),'C: CSV excludes tombstones while keeping active events');
+  await importBackup(frame,json);await reload(frame);check(same(state(frame),exportState),'C: actual JSON export restores losslessly');
+  await importBackup(frame,imported);
   await click(frame,'[data-filter="wee"]'); check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===1,'C: timeline filter still works');
   await click(frame,'#data-tab'); check(!frame.contentDocument.getElementById('data').hidden && frame.contentDocument.querySelectorAll('#data tbody tr').length===1,'C: Data shares filter and event store');
   await click(frame,'#stats-page-tab'); check(!frame.contentDocument.getElementById('stats-page').hidden,'C: Stats still switches independently');
@@ -149,30 +213,60 @@ async function run() {
   check(same(state(fallback),state(frame)),'C: focus reload works without BroadcastChannel');fallback.remove();
 
   const beforeFailure=state(frame), dbBefore=await databaseContents();
-  const success=await frame.contentWindow.eval('commit([...store.events,store.events[0]],false)');
+  const success=await frame.contentWindow.eval(`(async()=>{
+    const add=IDBObjectStore.prototype.add;
+    IDBObjectStore.prototype.add=function(value){const request=add.call(this,value);request.addEventListener('success',()=>this.transaction.abort(),{once:true});return request;};
+    try {return await commit(events=>events.map(e=>({...e,note:'Should roll back',updatedAt:new Date().toISOString(),mutationId:uniqueId()})),false);}
+    finally {IDBObjectStore.prototype.add=add;}
+  })()`);
   check(success===false && same(state(frame),beforeFailure),'D: failed native IndexedDB write leaves memory unchanged');
   check(same(await databaseContents(),dbBefore),'D: transaction abort rolls back event and metadata changes together');
   await click(frame,'[data-add="wee"]');check(state(frame).events.length===beforeFailure.events.length+1,'D: later writes recover after aborted transaction');
 
-  for (const raw of ['{broken','null',JSON.stringify({version:2,demoCleared:false,events:[]}),JSON.stringify({version:1,demoCleared:false,events:[{...known.events[0],datetime:'2026-02-30T08:00'}]})]) {
+  for (const raw of ['{broken','null',JSON.stringify({version:99,demoCleared:false,events:[]}),JSON.stringify({version:1,demoCleared:false,events:[{...known.events[0],datetime:'2026-02-30T08:00'}]})]) {
     await reset(raw);frame=await start();database=await databaseContents();
     check(blocked(frame) && localStorage.getItem(KEY)===raw && database.events.length===0 && database.meta.length===0 && state(frame).events.length===0,'D: malformed legacy diary is retained, blocked and never replaced by demo');
   }
   await reset(legacy);frame=await start("const nativeAdd=IDBObjectStore.prototype.add;IDBObjectStore.prototype.add=function(value){const request=nativeAdd.call(this,value);request.addEventListener('success',()=>this.transaction.abort(),{once:true});return request;};");
   database=await databaseContents();check(blocked(frame) && localStorage.getItem(KEY)===legacy && database.events.length===0 && database.meta.length===0,'D: aborted migration leaves legacy intact and IndexedDB uninitialized');
-  await reload(frame);check(same(state(frame),known),'D: reload can safely retry failed migration');
+  await reload(frame);check(upgradedKnown(state(frame)),'D: reload can safely retry failed migration');
   for (const inject of ["Object.defineProperty(window,'indexedDB',{value:undefined});","indexedDB.open=()=>{throw new DOMException('Unavailable','SecurityError');};"]) {
     await reset(legacy);frame=await start(inject);check(blocked(frame) && state(frame).events.length===0 && localStorage.getItem(KEY)===legacy,'D: unavailable/failed database open blocks without seeding or changing legacy');
   }
   await reset(legacy);frame=await start();
   const readOnlyLegacy=await start("const get=Storage.prototype.getItem;Storage.prototype.getItem=function(key){if(key==='bellaDiary.store')throw new Error('Legacy access denied');return get.call(this,key);};");
-  check(same(state(readOnlyLegacy),known),'D: initialized database loads even when legacy storage access fails');readOnlyLegacy.remove();
+  check(upgradedKnown(state(readOnlyLegacy)),'D: initialized database loads even when legacy storage access fails');readOnlyLegacy.remove();
 
-  await waitFor(()=>navigator.serviceWorker.controller,'service-worker control');
-  const cache=await caches.open('bellas-diary-shell-v6'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  // Reruns can retain an unregistered controller. Force a fresh test installation
+  // instead of treating that old controller as proof of the current precache.
+  await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
+  await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  check(required.every(path=>keys.includes(path)),'E: v6 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v7');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v7'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v7 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
+  // Strict current schema: no implicit legacy defaults or invalid instants/order.
+  const valid=state(frame).events[0];
+  for (const change of [{createdAt:undefined},{updatedAt:'bad'},{deletedAt:undefined},{mutationId:''},{createdAt:'2026-02-30T00:00:00.000Z'},{updatedAt:'1900-01-01T00:00:00.000Z'},{deletedAt:'9999-01-01T00:00:00.000Z'},{updatedAt:'2026-10-07T09:00:00+01:00'}]) {
+    const prior=state(frame);let rejected=false;
+    try {frame.contentWindow.validateEvents([{...valid,...change}]);} catch {rejected=true;}
+    check(rejected && same(state(frame),prior),'F: current-schema metadata validation rejects malformed/missing/out-of-order fields');
+  }
+  const beforeDemoPurge=state(frame);
+  const demoRecords=beforeDemoPurge.events.map((e,index)=>({...e,id:`demo-${index}`,demo:true}));
+  demoRecords[0].deletedAt=demoRecords[0].updatedAt;
+  await importBackup(frame,{version:2,demoCleared:false,events:[...beforeDemoPurge.events,...demoRecords]});
+  await click(frame,'#clear-demo');await reload(frame);
+  check(same(state(frame).events,beforeDemoPurge.events) && !(await databaseContents()).events.some(e=>e.demo),'F: demo purge removes active/deleted demos and preserves real records');
+  await importBackup(frame,beforeDemoPurge);
+  const peerDelete=await start();
+  await click(frame,'#timeline [data-id="m-poo"]');await click(frame,'#delete-event');
+  await waitFor(()=>state(peerDelete).events.find(e=>e.id==='m-poo')?.deletedAt!=null,'peer tombstone refresh');
+  await reload(peerDelete);check(same(state(peerDelete),state(frame)) && !peerDelete.contentDocument.querySelector('#timeline [data-id="m-poo"]'),'F: peer refresh/reload retains tombstone without resurrection');peerDelete.remove();
+  check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===2 && frame.contentDocument.querySelectorAll('#data tbody tr').length===2 && frame.contentDocument.querySelector('#summary .metric strong').textContent==='2','F: deleted accident excluded from table, timeline and tracked-day counts');
+  const activeStats=frame.contentWindow.eval('statistics(activeEvents())');
+  check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';
 }
@@ -185,6 +279,15 @@ async function offline() {
   await click(onlineFrame,'[data-add="wee"]');const added=state(onlineFrame);
   check(added.events.length===before.events.length+1 && (await databaseContents()).events.length===added.events.length,'E: native IndexedDB writes work offline');
   await reload(onlineFrame,'-offline-again');check(same(state(onlineFrame),added),'E: offline reload retains new event');
+  const event=state(onlineFrame).events.at(-1);
+  await click(onlineFrame,`#timeline [data-id="${event.id}"]`);
+  onlineFrame.contentDocument.getElementById('event-form').elements.note.value='Offline edit';
+  await click(onlineFrame,'#event-form button[type="submit"]');await reload(onlineFrame,'-offline-edited');
+  const edited=state(onlineFrame).events.find(e=>e.id===event.id);
+  check(edited.note==='Offline edit' && edited.createdAt===event.createdAt && edited.deletedAt===null,'E: offline edit persists without changing creation metadata');
+  await click(onlineFrame,`#timeline [data-id="${event.id}"]`);await click(onlineFrame,'#delete-event');await reload(onlineFrame,'-offline-deleted');
+  const deleted=state(onlineFrame).events.find(e=>e.id===event.id);
+  check(deleted.deletedAt===deleted.updatedAt && deleted.deletedAt!==null && validMetadata(deleted) && !onlineFrame.contentDocument.querySelector(`#timeline [data-id="${event.id}"]`),'E: offline deletion/reload retains hidden tombstone');
   results.textContent+=`\nALL ${passed} CHECKS PASSED.`;
 }
 document.getElementById('run').addEventListener('click',()=>run().catch(fail));
