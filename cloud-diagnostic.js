@@ -4,7 +4,7 @@
 (() => {
   const el = id => document.getElementById(id);
   const NOTE = 'Bella Diary cloud connection test';
-  const columns = 'id,household_id,type,datetime,location,note,demo,client_created_at,client_updated_at,deleted_at,mutation_id,server_updated_at';
+  const columns = 'id,household_id,type,datetime,location,note,demo,client_created_at,client_updated_at,deleted_at,mutation_id,server_updated_at,server_version';
   let identity = null, household = null, busy = false, generation = 0;
   let message = '', report = '', controller = null, activeId = null;
 
@@ -38,6 +38,7 @@
   function requireValue(ok) {if (!ok) throw new Error('Verification failed');}
 
   async function discover(ctx) {
+    window.dispatchEvent(new CustomEvent('bella-household-discovered',{detail:null}));
     message = 'Cloud access: Checking membership'; render();
     const members = await request(ctx,ctx.client.from('household_members').select('household_id').eq('user_id',ctx.user));
     if (!Array.isArray(members)) throw new Error('Membership');
@@ -53,6 +54,7 @@
     // Only prove SELECT access. No downloaded records enter the local diary.
     await request(ctx,ctx.client.from('diary_events').select('id').eq('household_id',household.id).limit(1));
     message = 'Cloud access: Ready';
+    window.dispatchEvent(new CustomEvent('bella-household-discovered',{detail:{...household,userId:ctx.user}}));
     return true;
   }
 
@@ -67,10 +69,11 @@
   // Compare instants: PostgreSQL may return +00:00 and microsecond precision.
   const instant = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
   const sameInstant = (a,b) => instant(a) && instant(b) && Date.parse(a) === Date.parse(b);
-  function verify(row, expected, previous) {
+  function verify(row, expected, version, previous) {
     requireValue(row && ['id','household_id','type','datetime','location','note','demo','mutation_id'].every(key => row[key] === expected[key]));
     requireValue(sameInstant(row.client_created_at,expected.client_created_at) && sameInstant(row.client_updated_at,expected.client_updated_at));
     requireValue(expected.deleted_at === null ? row.deleted_at === null : sameInstant(row.deleted_at,expected.deleted_at));
+    requireValue(Number(row.server_version) === version);
     // server_updated_at is never sent by this module: the database assigns it.
     requireValue(instant(row.server_updated_at) && (!previous || row.server_updated_at !== previous));
   }
@@ -96,23 +99,23 @@
       expected = {id,household_id:household.id,type:'wee',datetime:localTime(now),location:'outside',note:NOTE,demo:true,
         client_created_at:utc,client_updated_at:utc,deleted_at:null,mutation_id:crypto.randomUUID()};
       stageStart('Insert');
-      const created = await request(ctx,ctx.client.from('diary_events').insert(expected).select(columns).single());
-      inserted = true; verify(created,expected); stamp = created.server_updated_at; ok();
+      const created = await request(ctx,ctx.client.from('diary_events').insert({...expected,server_version:999}).select(columns).single());
+      inserted = true; verify(created,expected,1); stamp = created.server_updated_at; ok();
       stageStart('Read');
-      const read = await request(ctx,rowQuery()); verify(read,expected); requireValue(read.server_updated_at === stamp); ok();
+      const read = await request(ctx,rowQuery()); verify(read,expected,1); requireValue(read.server_updated_at === stamp); ok();
       stageStart('Update');
       let next = new Date(Math.max(Date.now(),Date.parse(expected.client_updated_at)+1)).toISOString();
-      const update = {note:NOTE+' - updated',client_updated_at:next,mutation_id:crypto.randomUUID()};
+      const update = {server_version:999,note:NOTE+' - updated',client_updated_at:next,mutation_id:crypto.randomUUID()};
       expected = {...expected,...update};
       const updated = await request(ctx,target(ctx.client.from('diary_events').update(update)).select(columns).single());
-      verify(updated,expected,stamp); stamp = updated.server_updated_at; ok();
+      verify(updated,expected,2,stamp); stamp = updated.server_updated_at; ok();
       stageStart('Tombstone');
       next = new Date(Math.max(Date.now(),Date.parse(next)+1)).toISOString();
-      const tombstone = {deleted_at:next,client_updated_at:next,mutation_id:crypto.randomUUID()};
+      const tombstone = {server_version:999,deleted_at:next,client_updated_at:next,mutation_id:crypto.randomUUID()};
       expected = {...expected,...tombstone};
       const deleted = await request(ctx,target(ctx.client.from('diary_events').update(tombstone)).select(columns).single());
-      verify(deleted,expected,stamp); stamp = deleted.server_updated_at;
-      const retained = await request(ctx,rowQuery()); verify(retained,expected); requireValue(retained.server_updated_at === stamp); ok();
+      verify(deleted,expected,3,stamp); stamp = deleted.server_updated_at;
+      const retained = await request(ctx,rowQuery()); verify(retained,expected,3); requireValue(retained.server_updated_at === stamp); ok();
       stageStart('Cleanup');
       await request(ctx,target(ctx.client.from('diary_events').delete()));
       const remaining = await request(ctx,ctx.client.from('diary_events').select('id').eq('household_id',household.id).eq('id',id));

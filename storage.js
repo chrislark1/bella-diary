@@ -9,7 +9,7 @@ const diaryRepository = (() => {
     if (!opening) {
       opening = new Promise((resolve, reject) => {
         if (typeof indexedDB === 'undefined') throw new Error('IndexedDB is unavailable.');
-        const request = indexedDB.open(DATABASE, 2);
+        const request = indexedDB.open(DATABASE, 3);
         let failed = false, upgradeError;
         request.onupgradeneeded = event => {
           const db = request.result, transaction = request.transaction;
@@ -86,18 +86,34 @@ const diaryRepository = (() => {
       if (!byId.has(id)) throw new Error('Diary event order is invalid.');
       const event = byId.get(id); byId.delete(id); return event;
     });
-    return {version:meta.get('schemaVersion'), demoCleared:meta.get('demoCleared'), events:orderedEvents};
+    const saved = {version:meta.get('schemaVersion'), demoCleared:meta.get('demoCleared'), events:orderedEvents};
+    if (saved.version === 3) {
+      if (!meta.has('householdId') || !validHousehold(meta.get('householdId'))) throw new Error('Diary household binding is invalid.');
+      saved.householdId = meta.get('householdId');
+    }
+    return saved;
   }
 
   function writeDiary(db, store, initializeOnly) {
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(['events','meta'], 'readwrite');
-      let wrote = false, failure;
-      transaction.oncomplete = () => resolve(wrote);
+      let wrote = false, failure, householdId = null;
+      transaction.oncomplete = () => resolve({wrote, householdId});
       transaction.onabort = () => reject(failure || transaction.error || new Error('Diary transaction aborted.'));
       const meta = transaction.objectStore('meta');
       const write = () => {
-        try {replaceDiary(transaction,store); wrote = true;}
+        try {
+          // Binding is authoritative in this transaction, even for a stale window
+          // or a JSON restore. Event saves cannot erase or replace it.
+          const binding = meta.get('householdId');
+          binding.onsuccess = () => {
+            try {
+              householdId = binding.result?.value ?? null;
+              if (!validHousehold(householdId)) throw new Error('Invalid household binding.');
+              replaceDiary(transaction,{...store, householdId}); wrote = true;
+            } catch (error) {failure = error; transaction.abort();}
+          };
+        }
         catch (error) {failure = error; try {transaction.abort();} catch {}}
       };
       if (initializeOnly) {
@@ -118,7 +134,10 @@ const diaryRepository = (() => {
     meta.put({key:'demoCleared', value:store.demoCleared});
     meta.put({key:'eventOrder', value:store.events.map(event => event.id)});
     meta.put({key:'initialized', value:true});
+    meta.put({key:'householdId', value:store.householdId});
   }
+
+  const validHousehold = id => id === null || typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id);
 
   function getChannel() {
     if (!channel && typeof BroadcastChannel !== 'undefined') {
@@ -146,10 +165,30 @@ const diaryRepository = (() => {
     async save(store, {initializeOnly = false} = {}) {
       try {
         const db = await openDatabase();
-        const wrote = await writeDiary(db, store, initializeOnly);
+        const {wrote, householdId} = await writeDiary(db, store, initializeOnly);
         // A notification failure must not turn a committed write into an error.
         if (wrote) {try {getChannel()?.postMessage('saved');} catch {}}
+        return householdId;
       } catch (error) {throw new Error(`Could not save the diary: ${error.message}`);}
+    },
+
+    async bindHousehold(id) {
+      if (id === null || !validHousehold(id)) throw new Error('Invalid household ID.');
+      const db = await openDatabase();
+      const transaction = db.transaction('meta','readwrite'), meta = transaction.objectStore('meta');
+      const done = transactionDone(transaction);
+      let mismatch = false;
+      const request = meta.get('householdId');
+      request.onsuccess = () => {
+        const existing = request.result?.value;
+        if (!validHousehold(existing)) {transaction.abort(); return;}
+        if (existing !== null && existing !== id) {mismatch = true; return;}
+        if (existing === null) meta.put({key:'householdId',value:id});
+      };
+      await done;
+      if (mismatch) throw new Error('Household mismatch: this diary is already linked to another household.');
+      try {getChannel()?.postMessage('saved');} catch {}
+      return id;
     },
 
     subscribe(listener) {

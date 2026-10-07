@@ -130,7 +130,8 @@ begin
   begin
     update public.diary_events set household_id = foreign_household where id = event_id;
     raise exception 'FAIL: UPDATE moved event into foreign household';
-  exception when insufficient_privilege then null; end;
+  -- Stage 5A rejects household changes in the BEFORE trigger, before RLS WITH CHECK.
+  exception when insufficient_privilege or invalid_parameter_value then null; end;
   begin
     insert into public.diary_events(id, household_id, type, datetime,
       client_created_at, client_updated_at, mutation_id)

@@ -34,23 +34,23 @@ async function databaseContents() {
   } finally {db.close();}
 }
 function originalFields(event) {
-  const {createdAt,updatedAt,deletedAt,mutationId,...fields} = event; return fields;
+  const {createdAt,updatedAt,deletedAt,mutationId,serverVersion,...fields} = event; return fields;
 }
 function upgradedKnown(saved) {
-  return saved.version===2 && saved.demoCleared===known.demoCleared && same(saved.events.map(originalFields),known.events);
+  return saved.version===3 && saved.demoCleared===known.demoCleared && same(saved.events.map(originalFields),known.events);
 }
 function validMetadata(event) {
   return ['createdAt','updatedAt'].every(key=>typeof event[key]==='string' && new Date(event[key]).toISOString()===event[key]) && event.updatedAt>=event.createdAt && (event.deletedAt===null || (new Date(event.deletedAt).toISOString()===event.deletedAt && event.deletedAt<=event.updatedAt)) && /^[a-z0-9-]{1,200}$/.test(event.mutationId);
 }
-async function seedStage2(saved) {
-  const request=indexedDB.open('bellaDiary',1);
+async function seedStage2(saved, databaseVersion = 1) {
+  const request=indexedDB.open('bellaDiary',databaseVersion);
   request.onupgradeneeded=()=>{request.result.createObjectStore('events',{keyPath:'id'});request.result.createObjectStore('meta',{keyPath:'key'});};
   const db=await requestValue(request);
   try {
     const tx=db.transaction(['events','meta'],'readwrite');
     const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});
     saved.events.forEach(event=>tx.objectStore('events').add(event));
-    for (const [key,value] of Object.entries({schemaVersion:1,demoCleared:saved.demoCleared,eventOrder:saved.events.map(e=>e.id),initialized:true})) tx.objectStore('meta').put({key,value});
+    for (const [key,value] of Object.entries({schemaVersion:databaseVersion,demoCleared:saved.demoCleared,eventOrder:saved.events.map(e=>e.id),initialized:true})) tx.objectStore('meta').put({key,value});
     await done;
   } finally {db.close();}
 }
@@ -106,10 +106,11 @@ async function run() {
   for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister();
   for (const key of await caches.keys()) if (key.startsWith('bellas-diary-shell-')) await caches.delete(key);
 
+  await modelMigrationChecks();
   const legacy=JSON.stringify(known,null,2);
   await reset(legacy); await seedStage2(known); let frame=await start();
   let upgraded=state(frame), upgradedDB=await databaseContents();
-  check(upgradedDB.version===2 && upgradedDB.meta.some(m=>m.key==='schemaVersion' && m.value===2),'A: database and diary schema upgrade from 1 to 2');
+  check(upgradedDB.version===3 && upgradedDB.meta.some(m=>m.key==='schemaVersion' && m.value===3),'A: database and diary schema upgrade from 1 to 3');
   check(upgradedKnown(upgraded),'A: Stage 2 upgrade preserves IDs, local diary times, order and fields');
   check(upgraded.events.every(e=>validMetadata(e) && e.createdAt===e.updatedAt && e.deletedAt===null) && new Set(upgraded.events.map(e=>e.createdAt)).size===1,'A: migration assigns one UTC instant and valid change IDs');
   check(localStorage.getItem(KEY)===legacy,'A: schema upgrade preserves legacy rollback snapshot');
@@ -247,9 +248,9 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v10');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v10'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v10 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v11');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v11'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v11 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -274,6 +275,7 @@ async function run() {
   check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
   await authChecks(frame);
   await cloudChecks();
+  await modelChecks(frame);
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';
 }

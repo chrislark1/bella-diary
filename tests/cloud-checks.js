@@ -14,13 +14,13 @@ window.cloudFrom=table=>{
       return (async()=>{
         if(fixture.hang){await new Promise(r=>{q.signal.addEventListener('abort',r,{once:true});});return {error:new Error('Aborted')};}
         if(fixture.fail===q.op || fixture.fail===table)return {error:new Error('sensitive raw error must not be displayed')};
-        if(table==='household_members')return {data:Array.from({length:fixture.households},(_,i)=>({household_id:'home-'+i}))};
-        if(table==='households')return {data:[{id:'home-0',name:'Bella <b>test</b>'}]};
+        if(table==='household_members')return {data:Array.from({length:fixture.households},(_,i)=>({household_id:fixture.householdId||'00000000-0000-4000-8000-'+String(i+1).padStart(12,'0')}))};
+        if(table==='households')return {data:[{id:fixture.householdId||'00000000-0000-4000-8000-000000000001',name:'Bella <b>test</b>'}]};
         const id=q.filters.find(([key])=>key==='id')?.[1];
         let row=fixture.rows.get(id);
         const stamp=()=>new Date(1700000000000+(++fixture.stamp)*1000).toISOString();
-        if(q.op==='insert'){row={...q.payload,server_updated_at:stamp()};fixture.rows.set(row.id,row);}
-        if(q.op==='update'){row={...row,...q.payload,server_updated_at:(fixture.frozenStamp || (fixture.frozenTombstone && q.payload.deleted_at))?row.server_updated_at:stamp()};fixture.rows.set(id,row);}
+        if(q.op==='insert'){row={...q.payload,server_updated_at:stamp(),server_version:fixture.forceVersion?q.payload.server_version:1};fixture.rows.set(row.id,row);}
+        if(q.op==='update'){row={...row,...q.payload,server_version:fixture.forceVersion?q.payload.server_version:row.server_version+1,server_updated_at:(fixture.frozenStamp || (fixture.frozenTombstone && q.payload.deleted_at))?row.server_updated_at:stamp()};fixture.rows.set(id,row);}
         if(q.op==='delete'){if(!fixture.keepRow)fixture.rows.delete(id);return {data:null};}
         if(q.op==='select' && !id)return {data:Array.from(fixture.rows.values()).slice(0,q.limit||100)};
         if(fixture.missingStamp && row)row={...row,server_updated_at:null};
@@ -55,21 +55,22 @@ async function cloudChecks() {
   frame.contentWindow.authFixture.online=true;frame.contentWindow.dispatchEvent(new frame.contentWindow.Event('online'));
   await click(frame,'#cloud-test');await complete(frame);
   check(text(frame,'cloud-results').startsWith('Cloud connection test passed'),'I: full diagnostic succeeds');
+  check(fixture.stamp===3 && fixture.calls.filter(c=>c.op==='insert'||c.op==='update').every(c=>c.payload.server_version===999),'J: diagnostic rejects client-forced versions and verifies server versions 1 -> 2 -> 3');
   const calls=fixture.calls.slice(callCount), writes=calls.filter(c=>c.op!=='select');
   check(writes.map(c=>c.op).join(',')==='insert,update,update,delete' && calls.map(c=>c.op).join(',')==='select,select,select,insert,select,update,update,select,delete,select','I: authenticated discovery, insert, read, update, tombstone/read and delete/absence checks run in order');
   const payload=writes[0].payload, uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-  check(uuid.test(payload.id) && uuid.test(payload.mutation_id) && payload.household_id==='home-0' && payload.type==='wee' && payload.location==='outside' && payload.demo===true && payload.note==='Bella Diary cloud connection test','I: unique disposable demo wee uses discovered household and diagnostic note');
+  check(uuid.test(payload.id) && uuid.test(payload.mutation_id) && payload.household_id==='00000000-0000-4000-8000-000000000001' && payload.type==='wee' && payload.location==='outside' && payload.demo===true && payload.note==='Bella Diary cloud connection test','I: unique disposable demo wee uses discovered household and diagnostic note');
   const now=new Date(), pad=n=>String(n).padStart(2,'0');
   check(payload.datetime.startsWith(`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T`) && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(payload.datetime) && new Date(payload.client_created_at).toISOString()===payload.client_created_at && payload.client_created_at===payload.client_updated_at && payload.deleted_at===null && !('server_updated_at' in payload) && !('createdAt' in payload),'I: wall-clock datetime and canonical UTC metadata map to cloud schema; server timestamp omitted');
   check(writes[1].payload.mutation_id!==payload.mutation_id && writes[2].payload.mutation_id!==writes[1].payload.mutation_id && writes[2].payload.deleted_at===writes[2].payload.client_updated_at,'I: updates mint new mutations and tombstone shares its client update instant');
-  check(writes.slice(1).every(c=>c.filters.some(([k,v])=>k==='id'&&v===payload.id)&&c.filters.some(([k,v])=>k==='household_id'&&v==='home-0')&&c.filters.some(([k,v])=>k==='demo'&&v===true)) && fixture.rows.size===0,'I: mutations and cleanup target only the generated demo ID/household; absence verified');
+  check(writes.slice(1).every(c=>c.filters.some(([k,v])=>k==='id'&&v===payload.id)&&c.filters.some(([k,v])=>k==='household_id'&&v==='00000000-0000-4000-8000-000000000001')&&c.filters.some(([k,v])=>k==='demo'&&v===true)) && fixture.rows.size===0,'I: mutations and cleanup target only the generated demo ID/household; absence verified');
   check(same(await databaseContents(),before) && frame.contentWindow.authFixture.creates===1,'I: diagnostic neither uploads local diary records nor mutates IndexedDB; sole auth client reused');
   await click(frame,'#cloud-test');await complete(frame);
   check(fixture.calls.filter(c=>c.op==='insert')[1].payload.id!==payload.id,'I: repeat tests use fresh IDs, never reuse prior diagnostic records');
   await click(frame,'#auth-action');
   await waitFor(()=>frame.contentDocument.getElementById('cloud-diagnostic').hidden,'diagnostic hides on sign-out');
   check(same(await databaseContents(),before),'I: sign-out clears diagnostic identity without touching diary');frame.remove();
-  for(const [inject,stage] of [["cloudFixture.missingStamp=true;",'Insert'],["cloudFixture.frozenStamp=true;",'Update'],["cloudFixture.keepRow=true;",'Cleanup'],["cloudFixture.frozenTombstone=true;",'Tombstone'],["cloudFixture.fail='update';",'Update'],["cloudFixture.fail='insert';",'Insert']]) {
+  for(const [inject,stage] of [["cloudFixture.forceVersion=true;",'Insert'],["cloudFixture.missingStamp=true;",'Insert'],["cloudFixture.frozenStamp=true;",'Update'],["cloudFixture.keepRow=true;",'Cleanup'],["cloudFixture.frozenTombstone=true;",'Tombstone'],["cloudFixture.fail='update';",'Update'],["cloudFixture.fail='insert';",'Insert']]) {
     frame=await start(cloudFixture+inject,true);await waitFor(()=>text(frame,'cloud-status')==='Cloud access: Ready','failure fixture ready');
     await click(frame,'#cloud-test');await complete(frame);
     check(text(frame,'cloud-results').includes(stage+': failed') && !text(frame,'cloud-results').includes('sensitive raw error') && same(await databaseContents(),before),'I: '+stage+' failure is safe and leaves native diary unchanged ('+inject+')');frame.remove();

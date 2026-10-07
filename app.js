@@ -20,8 +20,14 @@ const titleCase = text => text[0].toUpperCase() + text.slice(1);
 const escapeHTML = text => String(text ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
 const shortDate = date => new Date(`${date}T12:00`).toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'});
 const previousDate = date => {const d = new Date(`${date}T12:00`); d.setDate(d.getDate() - 1); return localDate(d);};
-const uniqueId = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-const eventMetadata = (now = new Date().toISOString()) => ({createdAt:now, updatedAt:now, deletedAt:null, mutationId:uniqueId()});
+const uniqueId = () => {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes,byte => byte.toString(16).padStart(2,'0')).join('');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+};
+const eventMetadata = (now = new Date().toISOString()) => ({createdAt:now, updatedAt:now, deletedAt:null, mutationId:uniqueId(), serverVersion:null});
 const isActiveEvent = event => event.deletedAt === null;
 const activeEvents = () => store.events.filter(isActiveEvent);
 const median = values => {if (values.length < MIN_SAMPLES) return null; const a = [...values].sort((a,b) => a-b); const mid = Math.floor(a.length/2); return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;};
@@ -84,12 +90,15 @@ function validateEvents(input) {
     if (event.updatedAt < event.createdAt || (event.deletedAt !== null && event.deletedAt > event.updatedAt)) throw new Error('Invalid event modification order.');
     if (typeof raw.mutationId !== 'string' || !/^[a-z0-9-]{1,200}$/.test(raw.mutationId)) throw new Error('Invalid mutation ID.');
     event.mutationId = raw.mutationId;
+    if (raw.serverVersion !== null && (!Number.isSafeInteger(raw.serverVersion) || raw.serverVersion < 1)) throw new Error('Invalid serverVersion.');
+    event.serverVersion = raw.serverVersion;
     if (raw.demo === true) event.demo = true;
     return event;
   });
 }
 
-let store = {version:2, demoCleared:false, events:[]};
+let store = {version:3, householdId:null, demoCleared:false, events:[]};
+let discoveredHousehold = null, diaryLoaded = false;
 let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
@@ -100,16 +109,17 @@ function notify(text) {
 }
 
 function validateStore(saved) {
-  if (!saved || saved.version !== 2 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
+  if (!saved || saved.version !== 3 || typeof saved.demoCleared !== 'boolean' || (saved.householdId !== null && (typeof saved.householdId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(saved.householdId)))) throw new Error('Unrecognised saved diary.');
   return {...saved, events:validateEvents(saved.events)};
 }
 
 // Legacy upgrades are explicit; current-schema validation never supplies missing metadata.
 function upgradeStore(saved) {
-  if (saved?.version === 2) return validateStore(saved);
+  if (saved?.version === 3) return validateStore(saved);
+  if (saved?.version === 2) return validateStore({...saved, version:3, householdId:null, events:saved.events.map(event => ({...event,serverVersion:null}))});
   if (!saved || saved.version !== 1 || typeof saved.demoCleared !== 'boolean' || !Array.isArray(saved.events)) throw new Error('Unrecognised legacy diary.');
   const now = new Date().toISOString();
-  return validateStore({version:2, demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
+  return validateStore({version:3, householdId:null, demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
 }
 
 async function loadStore() {
@@ -118,10 +128,11 @@ async function loadStore() {
     if (saved !== null) {
       store = validateStore(saved);
     } else {
-      const initialStore = {version:2, demoCleared:false, events:demoWeek()};
+      const initialStore = {version:3, householdId:null, demoCleared:false, events:demoWeek()};
       await diaryRepository.save(initialStore, {initializeOnly:true});
       store = validateStore(await diaryRepository.load(upgradeStore));
     }
+    diaryLoaded = true;
   } catch (error) {
     // Never overwrite unreadable saved data or claim it has been saved.
     storageBlocked = true;
@@ -134,10 +145,10 @@ function commit(updateEvents, demoCleared) {
   const pending = mutationQueue.then(async () => {
     if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
     const events = typeof updateEvents === 'function' ? updateEvents(store.events) : updateEvents;
-    const next = {version:2, demoCleared:demoCleared ?? store.demoCleared, events};
-    try {validateStore(next); await diaryRepository.save(next);}
+    const next = {version:3, householdId:store.householdId, demoCleared:demoCleared ?? store.demoCleared, events};
+    try {validateStore(next); next.householdId = await diaryRepository.save(next);}
     catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
-    store = next; render(); return true;
+    store = next; render(); renderHouseholdBinding(); return true;
   });
   mutationQueue = pending.catch(() => {});
   return pending;
@@ -145,7 +156,40 @@ function commit(updateEvents, demoCleared) {
 
 function refreshStore() {
   // Cross-window reads share the queue so they cannot replace a pending local save.
-  mutationQueue = mutationQueue.then(async () => {await loadStore(); render();});
+  mutationQueue = mutationQueue.then(async () => {await loadStore(); render(); renderHouseholdBinding();});
+}
+
+// Household discovery supplies authorization; this action only links metadata.
+// It never reads cloud diary rows or uploads local records.
+function renderHouseholdBinding() {
+  const userId = window.bellaAuth?.getUser()?.id;
+  const discovered = discoveredHousehold?.userId === userId ? discoveredHousehold : null;
+  $('household-binding').hidden = !userId;
+  const mismatch = discovered && store.householdId !== null && store.householdId !== discovered.id;
+  $('binding-status').textContent = mismatch ? 'Household mismatch: this local diary belongs to another household. It will not be rebound; sync is not enabled.'
+    : store.householdId ? 'Local diary linked to a household · sync not enabled'
+    : 'Local diary is not linked to a household yet.';
+  $('bind-household').hidden = !!store.householdId || !discovered;
+  $('bind-household').disabled = !navigator.onLine || !diaryLoaded || storageBlocked || !discovered;
+}
+function bindLocalHousehold() {
+  const household = discoveredHousehold;
+  if (!household || !navigator.onLine || household.userId !== window.bellaAuth?.getUser()?.id || !diaryLoaded || storageBlocked) return;
+  mutationQueue = mutationQueue.then(async () => {
+    if (!navigator.onLine || household !== discoveredHousehold || household.userId !== window.bellaAuth?.getUser()?.id) return;
+    try {store.householdId = await diaryRepository.bindHousehold(household.id);}
+    catch (error) {notify(error.message); await loadStore();}
+    renderHouseholdBinding();
+  }).catch(() => {notify('Could not link the local diary. Existing data is unchanged.');});
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('bella-household-discovered',event => {discoveredHousehold = event.detail; renderHouseholdBinding();});
+  window.addEventListener('bella-auth-change',() => {
+    if (discoveredHousehold?.userId !== window.bellaAuth?.getUser()?.id) discoveredHousehold = null;
+    renderHouseholdBinding();
+  });
+  window.addEventListener('offline',renderHouseholdBinding);
+  window.addEventListener('online',renderHouseholdBinding);
 }
 
 function filteredEvents(events = activeEvents()) {
@@ -305,10 +349,10 @@ async function saveEditor(event) {
   // Editing a demo event keeps its provenance until explicitly cleared.
   const existing = editingId ? activeEvents().find(event => event.id === editingId) : null;
   if (editingId && !existing) {notify('This entry is no longer active.'); return;}
-  if (existing) {entry.createdAt = existing.createdAt; if (existing.demo) entry.demo = true;}
+  if (existing) {entry.createdAt = existing.createdAt; entry.serverVersion = existing.serverVersion; if (existing.demo) entry.demo = true;}
   try {validateEvents([entry]);} catch (error) {notify(error.message); return;}
   const id = editingId;
-  if (await commit(events => id ? events.map(event => event.id === id && isActiveEvent(event) ? {...entry, createdAt:event.createdAt} : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
+  if (await commit(events => id ? events.map(event => event.id === id && isActiveEvent(event) ? {...entry, createdAt:event.createdAt, serverVersion:event.serverVersion} : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
 }
 
 function download(filename,content,type) {
@@ -333,7 +377,7 @@ async function importJSON(file) {
     if (file.size > 10*1024*1024) throw new Error('Please choose a JSON backup smaller than 10 MB.');
     const data = JSON.parse(await file.text());
     if (!data || ![1,2].includes(data.version)) throw new Error('Please choose a version 1 or 2 Bella’s Diary JSON backup.');
-    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore(data);
+    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore({...data,version:3,householdId:store.householdId,events:data.events?.map(event => ({...event,serverVersion:event.serverVersion === undefined ? null : event.serverVersion}))});
     const events = restored.events, count = events.filter(isActiveEvent).length;
     if (!confirm(`Import ${count} events? This REPLACES all ${activeEvents().length} current entries. Export a backup first if you want to keep them.`)) return;
     if (await commit(events,restored.demoCleared)) notify(`Imported ${count} events`);
@@ -371,6 +415,7 @@ function connectEvents() {
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());
   $('import-file').addEventListener('change',event => importJSON(event.target.files[0]));
+  $('bind-household').addEventListener('click',bindLocalHousehold);
   diaryRepository.subscribe(refreshStore);
   window.addEventListener('focus',refreshStore);
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
@@ -391,5 +436,5 @@ async function setupOffline() {
   } catch (error) {$('offline-status').textContent = 'Offline caching unavailable. Serve over HTTPS or localhost.';}
 }
 
-async function initialiseApp() { $('rules').innerHTML = RULES; await loadStore(); connectEvents(); render(); setupOffline(); }
+async function initialiseApp() { $('rules').innerHTML = RULES; await loadStore(); connectEvents(); render(); renderHouseholdBinding(); setupOffline(); }
 if (typeof document !== 'undefined') initialiseApp();
