@@ -1,7 +1,6 @@
 'use strict';
 
 // One store, one filter, one editor. Datetimes are local wall-clock ISO strings.
-const STORE_KEY = 'bellaDiary.store';
 const WINDOW_KEY = 'bellaDiary.aggregateWindow';
 const TYPES = ['wee', 'poo', 'meal'];
 const CONSISTENCIES = ['Firm', 'Normal', 'Soft', 'Diarrhoea'];
@@ -86,16 +85,16 @@ function notify(text) {
   clearTimeout(messageTimer); messageTimer = setTimeout(() => {$('message').hidden = true;}, 5500);
 }
 
-function loadStore() {
+async function loadStore() {
   try {
-    const saved = localStorage.getItem(STORE_KEY);
+    const saved = await diaryRepository.load();
     if (saved !== null) {
-      const parsed = JSON.parse(saved);
-      if (parsed.version !== 1 || typeof parsed.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
-      store = {...parsed, events:validateEvents(parsed.events)};
+      if (saved.version !== 1 || typeof saved.demoCleared !== 'boolean') throw new Error('Unrecognised saved diary.');
+      store = {...saved, events:validateEvents(saved.events)};
     } else {
-      store.events = demoWeek();
-      localStorage.setItem(STORE_KEY, JSON.stringify(store));
+      const initialStore = {version:1, demoCleared:false, events:demoWeek()};
+      await diaryRepository.save(initialStore);
+      store = initialStore;
     }
   } catch (error) {
     // Never overwrite unreadable saved data or claim it has been saved.
@@ -104,10 +103,10 @@ function loadStore() {
   }
 }
 
-function commit(events, demoCleared = store.demoCleared) {
+async function commit(events, demoCleared = store.demoCleared) {
   if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
   const next = {version:1, demoCleared, events};
-  try {localStorage.setItem(STORE_KEY, JSON.stringify(next));}
+  try {await diaryRepository.save(next);}
   catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
   store = next; render(); return true;
 }
@@ -235,12 +234,12 @@ function render() {
   document.querySelectorAll('[data-tab]').forEach(button => {const selected = button.dataset.tab === activeTab; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
 }
 
-function quickAdd(type, location = 'outside') {
+async function quickAdd(type, location = 'outside') {
   const event = {id:uniqueId(),type,datetime:localDatetime(new Date()),note:''};
   if (type === 'meal') {event.mealFood = ''; event.mealAmount = '';}
   else {event.location = location; if (type === 'poo') event.pooConsistency = 'Normal';}
   const visible = activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
-  if (commit([...store.events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
+  if (await commit([...store.events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
 }
 
 function editorFields() {
@@ -260,7 +259,7 @@ function openEditor(id = null) {
   editorFields(); $('editor').showModal();
 }
 
-function saveEditor(event) {
+async function saveEditor(event) {
   event.preventDefault();
   const form = $('event-form'), value = key => form.elements[key].value;
   const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note')};
@@ -270,7 +269,7 @@ function saveEditor(event) {
   if (editingId && store.events.find(event => event.id === editingId)?.demo) entry.demo = true;
   try {validateEvents([entry]);} catch (error) {notify(error.message); return;}
   const events = editingId ? store.events.map(event => event.id === editingId ? entry : event) : [...store.events,entry];
-  if (commit(events)) {$('editor').close(); notify('Entry saved');}
+  if (await commit(events)) {$('editor').close(); notify('Entry saved');}
 }
 
 function download(filename,content,type) {
@@ -297,7 +296,7 @@ async function importJSON(file) {
     if (!data || data.version !== 1) throw new Error('Please choose a version 1 Bella’s Diary JSON backup.');
     const events = validateEvents(data.events);
     if (!confirm(`Import ${events.length} events? This REPLACES all ${store.events.length} current entries. Export a backup first if you want to keep them.`)) return;
-    if (commit(events,true)) notify(`Imported ${events.length} events`);
+    if (await commit(events,true)) notify(`Imported ${events.length} events`);
   } catch (error) {notify(`Import failed: ${error instanceof SyntaxError ? 'This file is not valid JSON.' : error.message}`);}
   finally {$('import-file').value = '';}
 }
@@ -327,12 +326,12 @@ function connectEvents() {
   $('event-form').elements.type.addEventListener('change',editorFields);
   $('event-form').addEventListener('submit',saveEditor);
   for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click',() => $('editor').close());
-  $('delete-event').addEventListener('click',() => {if (editingId && confirm('Delete this entry?') && commit(store.events.filter(event => event.id !== editingId))) {$('editor').close(); notify('Entry deleted');}});
-  $('clear-demo').addEventListener('click',() => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (commit(store.events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
+  $('delete-event').addEventListener('click',async () => {if (editingId && confirm('Delete this entry?') && await commit(store.events.filter(event => event.id !== editingId))) {$('editor').close(); notify('Entry deleted');}});
+  $('clear-demo').addEventListener('click',async () => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (await commit(store.events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());
   $('import-file').addEventListener('change',event => importJSON(event.target.files[0]));
-  window.addEventListener('storage',event => {if (event.key === STORE_KEY) {loadStore(); render();}});
+  window.addEventListener('storage',async event => {if (event.key === diaryRepository.key) {await loadStore(); render();}});
   document.addEventListener('visibilitychange',() => {if (!document.hidden) render();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
@@ -351,5 +350,5 @@ async function setupOffline() {
   } catch (error) {$('offline-status').textContent = 'Offline caching unavailable. Serve over HTTPS or localhost.';}
 }
 
-function initialiseApp() {loadStore(); $('rules').innerHTML = RULES; connectEvents(); render(); setupOffline();}
+async function initialiseApp() { $('rules').innerHTML = RULES; await loadStore(); connectEvents(); render(); setupOffline(); }
 if (typeof document !== 'undefined') initialiseApp();

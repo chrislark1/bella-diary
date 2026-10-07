@@ -16,7 +16,8 @@ Then open http://localhost:8080. The Python process stays running in the termina
 
 - `index.html`: accessible page and shared event editor.
 - `styles.css`: responsive layout with a shared timeline plotting grid.
-- `app.js`: demo, local storage, filtering, rendering, editing, statistics and backups.
+- `app.js`: diary behavior, filtering, rendering, editing, statistics and backups.
+- `storage.js`: asynchronous whole-diary repository, currently backed by localStorage.
 - `manifest.json`: standalone installation metadata.
 - `sw.js`: complete offline app-shell cache.
 - `icons/`: 192px and 512px PNG icons and SVG favicon.
@@ -35,7 +36,7 @@ Overlapping marks intentionally share one central lane at their actual times, wi
 
 ## Storage and backups
 
-Everything stays in this browser's localStorage, under `bellaDiary.store` (version, events, demo-cleared flag). An event's datetime is a local wall-clock ISO string `YYYY-MM-DDTHH:mm`; existing events keep their recorded calendar time if you later change timezone. Storage survives normal refresh, close/reopen and Home Screen relaunch in the same browser storage context. Browser profiles, devices and some installation contexts may have separate storage. Private browsing or clearing site data can remove the diary: export backups regularly.
+The app reads and writes the complete diary through the asynchronous `diaryRepository` interface in `storage.js`. Its current implementation uses this browser's localStorage and keeps the existing `bellaDiary.store` key and version 1 shape (version, events, demo-cleared flag) unchanged. The separate `bellaDiary.aggregateWindow` preference still stores the selected pattern window in localStorage. This boundary allows a different persistence implementation later without changing diary behavior; IndexedDB migration and cloud sync are not included. An event's datetime is a local wall-clock ISO string `YYYY-MM-DDTHH:mm`; existing events keep their recorded calendar time if you later change timezone. Storage survives normal refresh, close/reopen and Home Screen relaunch in the same browser storage context. Browser profiles, devices and some installation contexts may have separate storage. Private browsing or clearing site data can remove the diary: export backups regularly.
 
 Export JSON includes version 1, an export timestamp and every event. Import validates structure, dates, types, locations, consistency, text limits and unique IDs, then **replaces the whole diary after confirmation**. Bad imports leave the diary intact. Version 1 timezone-qualified ISO datetimes are converted to this device's local calendar time; local strings keep their wall-clock time. Imported demo provenance is retained. Exports include all events regardless of filters. CSV uses quoted values, a UTF-8 BOM and formula-safe text for spreadsheet use. JSON is the lossless restore format; CSV import is not supported.
 
