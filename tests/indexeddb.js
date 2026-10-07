@@ -246,10 +246,10 @@ async function run() {
   // instead of treating that old controller as proof of the current precache.
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
-  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v9');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v9'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v9 cache includes every static shell file');
+  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v10');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v10'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v10 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -273,6 +273,7 @@ async function run() {
   const activeStats=frame.contentWindow.eval('statistics(activeEvents())');
   check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
   await authChecks(frame);
+  await cloudChecks();
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';
 }
@@ -353,7 +354,7 @@ async function authChecks(diaryFrame) {
   frame=await start(authFixture,true,'https://auth-fixture.invalid/');
   await waitFor(()=>status(frame).startsWith('Not signed in'),'root slash accepted');
   check(frame.contentWindow.authFixture.projectURL==='https://auth-fixture.invalid','H: root trailing slash is normalized to project origin');frame.remove();
-  const sources=await Promise.all(['../index.html','../app.js','../storage.js','../auth.js','../supabase-config.js','../sw.js','../README.md'].map(async path=>(await (await fetch(path)).text())));
+  const sources=await Promise.all(['../index.html','../app.js','../storage.js','../auth.js','../cloud-diagnostic.js','../supabase-config.js','../sw.js','../README.md'].map(async path=>(await (await fetch(path)).text())));
   const credentialPattern=/sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
   check(sources.every(source=>!credentialPattern.test(source)),'G: application/config/docs contain no secret keys or credential JWTs');
   await diaryFrame.contentWindow.eval('mutationQueue');

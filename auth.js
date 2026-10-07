@@ -44,6 +44,7 @@
     el('auth-action').textContent = busy ? 'Please wait…' : user ? 'Sign out' : 'Sign in with Google';
     el('auth-action').disabled = busy || !navigator.onLine || !configured();
     el('auth-action').title = !navigator.onLine ? 'Reconnect to sign in or sign out' : '';
+    window.dispatchEvent(new Event('bella-auth-change'));
   }
 
   function loadLibrary() {
@@ -141,6 +142,8 @@
     } finally {busy = false; renderAccount();}
   }
 
+  // Reuse the one authenticated client. No session/token accessor or diary access.
+  window.bellaAuth = Object.freeze({getClient:() => client, getUser:() => user});
   el('auth-action').addEventListener('click',accountAction);
   window.addEventListener('offline',() => {refreshPolicy(); renderAccount();});
   window.addEventListener('online',() => {refreshPolicy(); if (!client || !ready) initialize(); renderAccount();});

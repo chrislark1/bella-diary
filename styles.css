@@ -62,3 +62,5 @@ header .page-tabs{justify-self:auto}
 
 /* Account controls stay within the existing overflow menu. */
 .menu-panel{max-height:calc(100dvh - 95px);overflow-y:auto}.cloud-account{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}.cloud-account>strong{font-size:13px}.cloud-account p{margin:0;font-size:11px;line-height:1.4;overflow-wrap:anywhere}.cloud-account button:disabled{opacity:.6;cursor:default}
+
+#cloud-diagnostic{display:grid;gap:8px}#cloud-diagnostic[hidden]{display:none}#cloud-results{white-space:pre-line}
