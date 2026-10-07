@@ -34,10 +34,10 @@ async function databaseContents() {
   } finally {db.close();}
 }
 function originalFields(event) {
-  const {createdAt,updatedAt,deletedAt,mutationId,serverVersion,...fields} = event; return fields;
+  const {createdAt,updatedAt,deletedAt,mutationId,serverVersion,syncBaseMutationId,...fields} = event; return fields;
 }
 function upgradedKnown(saved) {
-  return saved.version===3 && saved.demoCleared===known.demoCleared && same(saved.events.map(originalFields),known.events);
+  return saved.version===4 && saved.demoCleared===known.demoCleared && same(saved.events.map(originalFields),known.events);
 }
 function validMetadata(event) {
   return ['createdAt','updatedAt'].every(key=>typeof event[key]==='string' && new Date(event[key]).toISOString()===event[key]) && event.updatedAt>=event.createdAt && (event.deletedAt===null || (new Date(event.deletedAt).toISOString()===event.deletedAt && event.deletedAt<=event.updatedAt)) && /^[a-z0-9-]{1,200}$/.test(event.mutationId);
@@ -50,7 +50,7 @@ async function seedStage2(saved, databaseVersion = 1) {
     const tx=db.transaction(['events','meta'],'readwrite');
     const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});
     saved.events.forEach(event=>tx.objectStore('events').add(event));
-    for (const [key,value] of Object.entries({schemaVersion:databaseVersion,demoCleared:saved.demoCleared,eventOrder:saved.events.map(e=>e.id),initialized:true})) tx.objectStore('meta').put({key,value});
+    for (const [key,value] of Object.entries({schemaVersion:databaseVersion,demoCleared:saved.demoCleared,eventOrder:saved.events.map(e=>e.id),initialized:true,...(databaseVersion>=3?{householdId:saved.householdId}:{}),...(databaseVersion>=4?{syncConflicts:saved.syncConflicts}: {})})) tx.objectStore('meta').put({key,value});
     await done;
   } finally {db.close();}
 }
@@ -73,13 +73,14 @@ async function loaded(frame) {
   frame.contentWindow.confirm=()=>true; // Confirm only disposable test data operations.
   return frame;
 }
-async function start(inject = '', authConfigured = false, projectURL = 'https://auth-fixture.invalid') {
+async function start(inject = '', authConfigured = false, projectURL = 'https://auth-fixture.invalid', syncEnabled = false) {
   let html = await (await fetch('../index.html')).text();
   // Keep auth fixtures isolated even after the real config placeholders are filled.
   const config=authConfigured
     ? `<script>const SUPABASE_URL=${JSON.stringify(projectURL)};const SUPABASE_PUBLISHABLE_KEY="sb_publishable_test_placeholder";<\/script>`
     : '<script>const SUPABASE_URL="__SUPABASE_URL__";const SUPABASE_PUBLISHABLE_KEY="__SUPABASE_PUBLISHABLE_KEY__";<\/script>';
   html=html.replace('<script src="supabase-config.js" defer></script>',config);
+  if (!syncEnabled) html=html.replace('<script src="sync.js" defer></script>','');
   const frame = document.createElement('iframe');
   frame.srcdoc = html.replace('<head>',`<head><base href="${location.origin}/"><script>window.confirm=()=>true;${inject}<\/script>`);
   frames.append(frame);
@@ -110,7 +111,7 @@ async function run() {
   const legacy=JSON.stringify(known,null,2);
   await reset(legacy); await seedStage2(known); let frame=await start();
   let upgraded=state(frame), upgradedDB=await databaseContents();
-  check(upgradedDB.version===3 && upgradedDB.meta.some(m=>m.key==='schemaVersion' && m.value===3),'A: database and diary schema upgrade from 1 to 3');
+  check(upgradedDB.version===4 && upgradedDB.meta.some(m=>m.key==='schemaVersion' && m.value===4),'A: database and diary schema upgrade from 1 to 4');
   check(upgradedKnown(upgraded),'A: Stage 2 upgrade preserves IDs, local diary times, order and fields');
   check(upgraded.events.every(e=>validMetadata(e) && e.createdAt===e.updatedAt && e.deletedAt===null) && new Set(upgraded.events.map(e=>e.createdAt)).size===1,'A: migration assigns one UTC instant and valid change IDs');
   check(localStorage.getItem(KEY)===legacy,'A: schema upgrade preserves legacy rollback snapshot');
@@ -247,10 +248,10 @@ async function run() {
   // instead of treating that old controller as proof of the current precache.
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
-  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v11');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v11'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v11 cache includes every static shell file');
+  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v13');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v13'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v13 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -276,6 +277,8 @@ async function run() {
   await authChecks(frame);
   await cloudChecks();
   await modelChecks(frame);
+  await syncChecks();
+  frame=await start();
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';
 }
@@ -322,7 +325,7 @@ async function authChecks(diaryFrame) {
   await click(frame,'#auth-action');await waitFor(()=>fixture.oauth,'Google action');
   check(fixture.oauth.provider==='google' && fixture.oauth.options.redirectTo===location.origin+'/' && fixture.creates===1,'G: Google action uses app-root redirect and reuses client');
   fixture.emit('SIGNED_IN',{email:'fixture@example.invalid',user_metadata:{full_name:'Chris <b>test</b>'}});
-  check(status(frame)==='Signed in · cloud sync not enabled yet' && frame.contentDocument.getElementById('auth-identity').textContent==='Chris <b>test</b> · fixture@example.invalid' && !frame.contentDocument.querySelector('#auth-identity b'),'G: signed-in identity is safely rendered as text');
+  check(status(frame)==='Signed in · household diary sync' && frame.contentDocument.getElementById('auth-identity').textContent==='Chris <b>test</b> · fixture@example.invalid' && !frame.contentDocument.querySelector('#auth-identity b'),'G: signed-in identity is safely rendered as text');
   fixture.emit('TOKEN_REFRESHED',fixture.user);
   check(same(await databaseContents(),afterRecord) && fixture.cloudCalls===0,'G: auth state/refresh rendering neither modifies diary nor queries cloud diary tables');
   fixture.online=false;frame.contentWindow.dispatchEvent(new frame.contentWindow.Event('offline'));
@@ -356,7 +359,7 @@ async function authChecks(diaryFrame) {
   frame=await start(authFixture,true,'https://auth-fixture.invalid/');
   await waitFor(()=>status(frame).startsWith('Not signed in'),'root slash accepted');
   check(frame.contentWindow.authFixture.projectURL==='https://auth-fixture.invalid','H: root trailing slash is normalized to project origin');frame.remove();
-  const sources=await Promise.all(['../index.html','../app.js','../storage.js','../auth.js','../cloud-diagnostic.js','../supabase-config.js','../sw.js','../README.md'].map(async path=>(await (await fetch(path)).text())));
+  const sources=await Promise.all(['../index.html','../app.js','../storage.js','../auth.js','../cloud-diagnostic.js','../sync.js','../supabase-config.js','../sw.js','../README.md'].map(async path=>(await (await fetch(path)).text())));
   const credentialPattern=/sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
   check(sources.every(source=>!credentialPattern.test(source)),'G: application/config/docs contain no secret keys or credential JWTs');
   await diaryFrame.contentWindow.eval('mutationQueue');

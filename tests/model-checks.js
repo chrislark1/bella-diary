@@ -5,12 +5,12 @@ async function modelMigrationChecks() {
   const instant='2026-10-07T08:00:00.000Z';
   const old={version:2,demoCleared:true,events:known.events.map((event,i)=>({...event,createdAt:instant,updatedAt:instant,deletedAt:i===2?instant:null,mutationId:'old-'+i}))};
   await reset();await seedStage2(old,2);let frame=await start();const saved=state(frame), database=await databaseContents();
-  check(database.version===3 && saved.version===3 && saved.householdId===null && saved.events.every(e=>e.serverVersion===null),'J: version 2 database atomically upgrades to version 3 with null server versions and binding');
-  check(same(saved.events.map(({serverVersion,...event})=>event),old.events) && saved.demoCleared===old.demoCleared,'J: upgrade preserves legacy IDs, content, timestamps, mutations, tombstones and order');
+  check(database.version===4 && saved.version===4 && saved.householdId===null && saved.events.every(e=>e.serverVersion===null && e.syncBaseMutationId===null),'J: version 2 database atomically upgrades to version 4 with null sync baselines and server versions and binding');
+  check(same(saved.events.map(({serverVersion,syncBaseMutationId,...event})=>event),old.events) && saved.demoCleared===old.demoCleared,'J: upgrade preserves legacy IDs, content, timestamps, mutations, tombstones and order');
   await reset();await seedStage2(old,2);const before=await databaseContents();
   frame=await start("const add=IDBObjectStore.prototype.add;IDBObjectStore.prototype.add=function(value){const req=add.call(this,value);req.addEventListener('success',()=>this.transaction.abort(),{once:true});return req;};");
-  check(blocked(frame) && same(await databaseContents(),before),'J: failed version 2 -> 3 migration rolls back database version and all data');
-  await reload(frame);check(state(frame).events.every(e=>e.serverVersion===null),'J: rolled-back migration remains recoverable on reload');
+  check(blocked(frame) && same(await databaseContents(),before),'J: failed version 2 -> 4 migration rolls back database version and all data');
+  await reload(frame);check(state(frame).events.every(e=>e.serverVersion===null && e.syncBaseMutationId===null),'J: rolled-back migration remains recoverable on reload');
 }
 async function modelChecks(frame) {
   const before=state(frame), household='00000000-0000-4000-8000-000000000001', other='00000000-0000-4000-8000-000000000002';
@@ -22,23 +22,23 @@ async function modelChecks(frame) {
   Object.defineProperty(win.crypto,'randomUUID',{value:undefined,configurable:true});
   try {check(uuid.test(win.eval('uniqueId()')),'J: cryptographic fallback produces RFC 4122 version 4 UUIDs');}
   finally {Object.defineProperty(win.crypto,'randomUUID',{value:original,configurable:true});}
-  await importBackup(frame,{version:2,demoCleared:true,events:[{...event,serverVersion:7}]});
+  await importBackup(frame,{version:2,demoCleared:true,events:[{...event,serverVersion:7,syncBaseMutationId:event.mutationId}]});
   await click(frame,`#timeline [data-id="${event.id}"]`);frame.contentDocument.getElementById('event-form').elements.note.value='preserve server version';
   await click(frame,'#event-form button[type="submit"]');
-  check(state(frame).events[0].serverVersion===7,'J: local edit preserves accepted serverVersion');
+  check(state(frame).events[0].serverVersion===7 && state(frame).events[0].syncBaseMutationId===event.mutationId && state(frame).events[0].mutationId!==event.mutationId,'J: local edit preserves accepted serverVersion and baseline while generating a new mutation');
   await click(frame,`#timeline [data-id="${event.id}"]`);await click(frame,'#delete-event');await reload(frame);
-  check(state(frame).events[0].serverVersion===7 && state(frame).events[0].deletedAt!==null,'J: tombstone and reload preserve serverVersion');
+  check(state(frame).events[0].serverVersion===7 && state(frame).events[0].deletedAt!==null && state(frame).events[0].syncBaseMutationId===event.mutationId,'J: tombstone and reload preserve serverVersion and baseline');
   const oldBackup={version:2,demoCleared:true,events:before.events.map(({serverVersion,...record})=>record)};
   await importBackup(frame,oldBackup);
-  check(state(frame).events.every(e=>e.serverVersion===null),'J: older version 2 JSON without serverVersion restores as null');
+  check(state(frame).events.every(e=>e.serverVersion===null && e.syncBaseMutationId===null),'J: older version 2 JSON without serverVersion restores as null');
   let invalid=false;try{win.validateEvents([{...event,serverVersion:1.5}]);}catch{invalid=true;}
   check(invalid,'J: serverVersion rejects invalid non-integer versions');
-  // Only explicit, authenticated household discovery can offer the binding action.
+  // Test the repository binding guard independently from background sync.
   let authFrame=await start(cloudFixture,true);
   await waitFor(()=>authFrame.contentDocument.getElementById('cloud-status').textContent==='Cloud access: Ready','binding discovery');
   const records=(await databaseContents()).events;
-  await click(authFrame,'#bind-household');
-  check(state(authFrame).householdId===household && same((await databaseContents()).events,records),'J: explicit authenticated binding null -> household UUID changes metadata only');
+  await authFrame.contentWindow.eval(`diaryRepository.bindHousehold('${household}')`);await authFrame.contentWindow.refreshStore();await authFrame.contentWindow.eval('mutationQueue');
+  check(state(authFrame).householdId===household && same((await databaseContents()).events,records),'J: binding null -> household UUID changes metadata only');
   const boundDB=await databaseContents();
   await authFrame.contentWindow.eval(`diaryRepository.bindHousehold('${household}')`);
   check(same(await databaseContents(),boundDB),'J: binding the same household is idempotent');
@@ -54,7 +54,7 @@ async function modelChecks(frame) {
   authFrame.remove();
   const otherFixture=cloudFixture+`cloudFixture.householdId='${other}';`;
   authFrame=await start(otherFixture,true);await waitFor(()=>authFrame.contentDocument.getElementById('cloud-status').textContent==='Cloud access: Ready','mismatch discovery');
-  check(authFrame.contentDocument.getElementById('binding-status').textContent.includes('Household mismatch') && authFrame.contentDocument.getElementById('bind-household').hidden && state(authFrame).householdId===household,'J: authenticated different-household user sees mismatch, with no switching or rebinding');authFrame.remove();
+  check(authFrame.contentDocument.getElementById('binding-status').textContent.includes('Household mismatch') && !authFrame.contentDocument.getElementById('bind-household') && state(authFrame).householdId===household,'J: authenticated different-household user sees mismatch, with no switching or rebinding');authFrame.remove();
   // Restore test events via a stale pre-binding window: binding must survive saves/imports.
   await importBackup(frame,{version:2,demoCleared:before.demoCleared,events:before.events});
   check(state(frame).householdId===household && same(state(frame).events,before.events),'J: stale-window JSON restore preserves the authoritative household binding');

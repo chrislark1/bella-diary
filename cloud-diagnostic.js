@@ -37,19 +37,24 @@
   }
   function requireValue(ok) {if (!ok) throw new Error('Verification failed');}
 
+  async function discoverHousehold(client,userId,send) {
+    const members = await send(client.from('household_members').select('household_id').eq('user_id',userId));
+    if (!Array.isArray(members)) throw new Error('Membership');
+    if (members.length !== 1) return {household:null,issue:members.length === 0
+      ? 'Cloud access: No household membership. Ask the household owner to arrange setup.'
+      : 'Cloud access: Multiple households found. Household selection is required.'};
+    const homes = await send(client.from('households').select('id,name').eq('id',members[0].household_id));
+    requireValue(homes?.length === 1 && homes[0].id === members[0].household_id && typeof homes[0].name === 'string');
+    return {household:homes[0]};
+  }
+  window.bellaCloud = Object.freeze({discoverHousehold});
+
   async function discover(ctx) {
     window.dispatchEvent(new CustomEvent('bella-household-discovered',{detail:null}));
     message = 'Cloud access: Checking membership'; render();
-    const members = await request(ctx,ctx.client.from('household_members').select('household_id').eq('user_id',ctx.user));
-    if (!Array.isArray(members)) throw new Error('Membership');
-    if (members.length !== 1) {
-      message = members.length === 0 ? 'Cloud access: No household membership. Ask the household owner to arrange setup.' : 'Cloud access: Multiple households found. Household selection is required.';
-      return false;
-    }
-    message = 'Cloud access: Checking household'; render();
-    const homes = await request(ctx,ctx.client.from('households').select('id,name').eq('id',members[0].household_id));
-    requireValue(homes?.length === 1 && homes[0].id === members[0].household_id && typeof homes[0].name === 'string');
-    household = homes[0];
+    const result = await discoverHousehold(ctx.client,ctx.user,query => request(ctx,query));
+    if (!result.household) {message = result.issue; return false;}
+    household = result.household;
     message = 'Cloud access: Checking event read'; render();
     // Only prove SELECT access. No downloaded records enter the local diary.
     await request(ctx,ctx.client.from('diary_events').select('id').eq('household_id',household.id).limit(1));

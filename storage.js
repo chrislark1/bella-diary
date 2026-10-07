@@ -9,7 +9,7 @@ const diaryRepository = (() => {
     if (!opening) {
       opening = new Promise((resolve, reject) => {
         if (typeof indexedDB === 'undefined') throw new Error('IndexedDB is unavailable.');
-        const request = indexedDB.open(DATABASE, 3);
+        const request = indexedDB.open(DATABASE, 4);
         let failed = false, upgradeError;
         request.onupgradeneeded = event => {
           const db = request.result, transaction = request.transaction;
@@ -87,10 +87,11 @@ const diaryRepository = (() => {
       const event = byId.get(id); byId.delete(id); return event;
     });
     const saved = {version:meta.get('schemaVersion'), demoCleared:meta.get('demoCleared'), events:orderedEvents};
-    if (saved.version === 3) {
+    if (saved.version >= 3) {
       if (!meta.has('householdId') || !validHousehold(meta.get('householdId'))) throw new Error('Diary household binding is invalid.');
       saved.householdId = meta.get('householdId');
     }
+    if (saved.version === 4) saved.syncConflicts = meta.get('syncConflicts');
     return saved;
   }
 
@@ -110,7 +111,11 @@ const diaryRepository = (() => {
             try {
               householdId = binding.result?.value ?? null;
               if (!validHousehold(householdId)) throw new Error('Invalid household binding.');
-              replaceDiary(transaction,{...store, householdId}); wrote = true;
+              const conflicts = meta.get('syncConflicts');
+              conflicts.onsuccess = () => {
+                try {replaceDiary(transaction,{...store, householdId, syncConflicts:conflicts.result?.value || []}); wrote = true;}
+                catch (error) {failure = error; transaction.abort();}
+              };
             } catch (error) {failure = error; transaction.abort();}
           };
         }
@@ -135,6 +140,7 @@ const diaryRepository = (() => {
     meta.put({key:'eventOrder', value:store.events.map(event => event.id)});
     meta.put({key:'initialized', value:true});
     meta.put({key:'householdId', value:store.householdId});
+    meta.put({key:'syncConflicts', value:store.syncConflicts || []});
   }
 
   const validHousehold = id => id === null || typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id);
@@ -172,7 +178,36 @@ const diaryRepository = (() => {
       } catch (error) {throw new Error(`Could not save the diary: ${error.message}`);}
     },
 
-    async bindHousehold(id) {
+    // Read and transform the latest diary in one transaction. No awaits in its
+    // request callbacks: Safari keeps the transaction active, including rollback.
+    async transact(transform) {
+      const db = await openDatabase();
+      return new Promise((resolve,reject) => {
+        const tx = db.transaction(['events','meta'],'readwrite');
+        const events = tx.objectStore('events').getAll(), meta = tx.objectStore('meta').getAll();
+        let pending = 2, result, changed = false, failure;
+        const apply = () => {
+          if (--pending) return;
+          try {
+            const saved = reconstructDiary(events.result,meta.result);
+            if (!saved) throw new Error('Diary is not initialized.');
+            const next = transform(saved);
+            if (next && next.householdId !== saved.householdId) throw new Error('Household binding cannot change.');
+            changed = !!next && JSON.stringify(next) !== JSON.stringify(saved);
+            result = next || saved;
+            if (changed) replaceDiary(tx,result);
+          } catch (error) {failure = error; tx.abort();}
+        };
+        events.onsuccess = meta.onsuccess = apply;
+        tx.onabort = () => reject(failure || tx.error || new Error('Diary transaction aborted.'));
+        tx.oncomplete = () => {
+          if (changed) {try {getChannel()?.postMessage('saved');} catch {}}
+          resolve({changed,store:result});
+        };
+      });
+    },
+
+    async bindHousehold(id, canBind = () => true) {
       if (id === null || !validHousehold(id)) throw new Error('Invalid household ID.');
       const db = await openDatabase();
       const transaction = db.transaction('meta','readwrite'), meta = transaction.objectStore('meta');
@@ -183,7 +218,10 @@ const diaryRepository = (() => {
         const existing = request.result?.value;
         if (!validHousehold(existing)) {transaction.abort(); return;}
         if (existing !== null && existing !== id) {mismatch = true; return;}
-        if (existing === null) meta.put({key:'householdId',value:id});
+        if (existing === null) {
+          if (!canBind()) {transaction.abort(); return;}
+          meta.put({key:'householdId',value:id});
+        }
       };
       await done;
       if (mismatch) throw new Error('Household mismatch: this diary is already linked to another household.');

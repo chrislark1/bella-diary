@@ -34,10 +34,10 @@
     el('auth-identity').textContent = user ? [name,user.email].filter(Boolean).join(' · ') || 'Signed-in account' : '';
     el('auth-identity').hidden = !user;
     el('auth-status').textContent = !navigator.onLine
-      ? user ? 'Offline · session not checked · cloud sync not enabled yet' : ready ? 'Not signed in · offline' : 'Offline · account unavailable; local diary available'
+      ? user ? 'Offline · session not checked · household diary sync' : ready ? 'Not signed in · offline' : 'Offline · account unavailable; local diary available'
       : !configured() ? 'Account setup needed · local diary available'
-      : user ? 'Signed in · cloud sync not enabled yet'
-      : ready ? 'Not signed in · cloud sync not enabled yet'
+      : user ? 'Signed in · household diary sync'
+      : ready ? 'Not signed in · household diary sync'
       : problem ? 'Account unavailable · local diary available' : 'Checking account…';
     el('auth-error').textContent = problem;
     el('auth-error').hidden = !problem;
@@ -143,7 +143,14 @@
   }
 
   // Reuse the one authenticated client. No session/token accessor or diary access.
-  window.bellaAuth = Object.freeze({getClient:() => client, getUser:() => user});
+  window.bellaAuth = Object.freeze({getClient:() => client, getUser:() => user,
+    checkSession:async () => {
+      if (!client || !navigator.onLine) return null;
+      const {data,error} = await boundedRequest(client.auth.getSession());
+      if (error) throw new Error('Account unavailable');
+      return data.session?.user?.id || null;
+    }
+  });
   el('auth-action').addEventListener('click',accountAction);
   window.addEventListener('offline',() => {refreshPolicy(); renderAccount();});
   window.addEventListener('online',() => {refreshPolicy(); if (!client || !ready) initialize(); renderAccount();});

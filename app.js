@@ -27,7 +27,7 @@ const uniqueId = () => {
   const hex = Array.from(bytes,byte => byte.toString(16).padStart(2,'0')).join('');
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
 };
-const eventMetadata = (now = new Date().toISOString()) => ({createdAt:now, updatedAt:now, deletedAt:null, mutationId:uniqueId(), serverVersion:null});
+const eventMetadata = (now = new Date().toISOString()) => ({createdAt:now, updatedAt:now, deletedAt:null, mutationId:uniqueId(), serverVersion:null, syncBaseMutationId:null});
 const isActiveEvent = event => event.deletedAt === null;
 const activeEvents = () => store.events.filter(isActiveEvent);
 const median = values => {if (values.length < MIN_SAMPLES) return null; const a = [...values].sort((a,b) => a-b); const mid = Math.floor(a.length/2); return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;};
@@ -92,12 +92,15 @@ function validateEvents(input) {
     event.mutationId = raw.mutationId;
     if (raw.serverVersion !== null && (!Number.isSafeInteger(raw.serverVersion) || raw.serverVersion < 1)) throw new Error('Invalid serverVersion.');
     event.serverVersion = raw.serverVersion;
+    if (raw.syncBaseMutationId !== null && (typeof raw.syncBaseMutationId !== 'string' || !/^[a-z0-9-]{1,200}$/.test(raw.syncBaseMutationId))) throw new Error('Invalid sync baseline.');
+    event.syncBaseMutationId = raw.syncBaseMutationId;
+    if (event.serverVersion === null && event.syncBaseMutationId !== null) throw new Error('An unsynced event cannot have a sync baseline.');
     if (raw.demo === true) event.demo = true;
     return event;
   });
 }
 
-let store = {version:3, householdId:null, demoCleared:false, events:[]};
+let store = {version:4, householdId:null, demoCleared:false, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
 let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
 let storageBlocked = false;
@@ -109,17 +112,28 @@ function notify(text) {
 }
 
 function validateStore(saved) {
-  if (!saved || saved.version !== 3 || typeof saved.demoCleared !== 'boolean' || (saved.householdId !== null && (typeof saved.householdId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(saved.householdId)))) throw new Error('Unrecognised saved diary.');
-  return {...saved, events:validateEvents(saved.events)};
+  if (!saved || saved.version !== 4 || typeof saved.demoCleared !== 'boolean' || (saved.householdId !== null && (typeof saved.householdId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(saved.householdId)))) throw new Error('Unrecognised saved diary.');
+  const events = validateEvents(saved.events);
+  if (!Array.isArray(saved.syncConflicts)) throw new Error('Invalid conflict copies.');
+  const seen = new Set();
+  const syncConflicts = saved.syncConflicts.map(copy => {
+    if (!copy || typeof copy.id !== 'string' || seen.has(copy.id) || !events.some(event => event.id === copy.id)) throw new Error('Invalid conflict copy.');
+    seen.add(copy.id);
+    const cloud = copy.cloud === null ? null : validateEvents([copy.cloud])[0];
+    if (cloud && (cloud.id !== copy.id || cloud.demo || cloud.serverVersion === null)) throw new Error('Invalid cloud conflict copy.');
+    return {id:copy.id,cloud};
+  });
+  return {...saved, events, syncConflicts};
 }
 
 // Legacy upgrades are explicit; current-schema validation never supplies missing metadata.
 function upgradeStore(saved) {
-  if (saved?.version === 3) return validateStore(saved);
-  if (saved?.version === 2) return validateStore({...saved, version:3, householdId:null, events:saved.events.map(event => ({...event,serverVersion:null}))});
+  if (saved?.version === 4) return validateStore(saved);
+  if (saved?.version === 3) return validateStore({...saved,version:4,syncConflicts:[],events:saved.events.map(event => ({...event,syncBaseMutationId:null}))});
+  if (saved?.version === 2) return validateStore({...saved, version:4, householdId:null, syncConflicts:[], events:saved.events.map(event => ({...event,serverVersion:null,syncBaseMutationId:null}))});
   if (!saved || saved.version !== 1 || typeof saved.demoCleared !== 'boolean' || !Array.isArray(saved.events)) throw new Error('Unrecognised legacy diary.');
   const now = new Date().toISOString();
-  return validateStore({version:3, householdId:null, demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
+  return validateStore({version:4, householdId:null, syncConflicts:[], demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
 }
 
 async function loadStore() {
@@ -128,7 +142,7 @@ async function loadStore() {
     if (saved !== null) {
       store = validateStore(saved);
     } else {
-      const initialStore = {version:3, householdId:null, demoCleared:false, events:demoWeek()};
+      const initialStore = {version:4, householdId:null, demoCleared:false, events:demoWeek(),syncConflicts:[]};
       await diaryRepository.save(initialStore, {initializeOnly:true});
       store = validateStore(await diaryRepository.load(upgradeStore));
     }
@@ -140,15 +154,21 @@ async function loadStore() {
   }
 }
 
-function commit(updateEvents, demoCleared) {
+function commit(updateEvents, demoCleared, importedConflicts) {
   // Compute each mutation after the previous save finishes, preserving rapid taps.
   const pending = mutationQueue.then(async () => {
     if (storageBlocked) {notify('Storage is unavailable. Restore browser storage access before making changes.'); return false;}
-    const events = typeof updateEvents === 'function' ? updateEvents(store.events) : updateEvents;
-    const next = {version:3, householdId:store.householdId, demoCleared:demoCleared ?? store.demoCleared, events};
-    try {validateStore(next); next.householdId = await diaryRepository.save(next);}
+    let next;
+    try {
+      ({store:next} = await diaryRepository.transact(saved => {
+        const events = typeof updateEvents === 'function' ? updateEvents(saved.events) : updateEvents;
+        return validateStore({...saved,demoCleared:demoCleared ?? saved.demoCleared,events,
+          syncConflicts:Array.from(new Map([...(importedConflicts || []),...saved.syncConflicts].map(copy => [copy.id,copy])).values()).filter(copy => events.some(event => event.id === copy.id))});
+      }));
+    }
     catch (error) {notify('Could not save. Browser storage may be full or unavailable. Export a backup.'); return false;}
-    store = next; render(); renderHouseholdBinding(); return true;
+    store = next; render(); renderHouseholdBinding();
+    window.dispatchEvent(new Event('bella-local-save')); return true;
   });
   mutationQueue = pending.catch(() => {});
   return pending;
@@ -159,28 +179,15 @@ function refreshStore() {
   mutationQueue = mutationQueue.then(async () => {await loadStore(); render(); renderHouseholdBinding();});
 }
 
-// Household discovery supplies authorization; this action only links metadata.
-// It never reads cloud diary rows or uploads local records.
+// Household discovery supplies authorization; sync links an unbound diary.
 function renderHouseholdBinding() {
   const userId = window.bellaAuth?.getUser()?.id;
   const discovered = discoveredHousehold?.userId === userId ? discoveredHousehold : null;
   $('household-binding').hidden = !userId;
   const mismatch = discovered && store.householdId !== null && store.householdId !== discovered.id;
-  $('binding-status').textContent = mismatch ? 'Household mismatch: this local diary belongs to another household. It will not be rebound; sync is not enabled.'
-    : store.householdId ? 'Local diary linked to a household · sync not enabled'
-    : 'Local diary is not linked to a household yet.';
-  $('bind-household').hidden = !!store.householdId || !discovered;
-  $('bind-household').disabled = !navigator.onLine || !diaryLoaded || storageBlocked || !discovered;
-}
-function bindLocalHousehold() {
-  const household = discoveredHousehold;
-  if (!household || !navigator.onLine || household.userId !== window.bellaAuth?.getUser()?.id || !diaryLoaded || storageBlocked) return;
-  mutationQueue = mutationQueue.then(async () => {
-    if (!navigator.onLine || household !== discoveredHousehold || household.userId !== window.bellaAuth?.getUser()?.id) return;
-    try {store.householdId = await diaryRepository.bindHousehold(household.id);}
-    catch (error) {notify(error.message); await loadStore();}
-    renderHouseholdBinding();
-  }).catch(() => {notify('Could not link the local diary. Existing data is unchanged.');});
+  $('binding-status').textContent = mismatch ? 'Household mismatch: this local diary belongs to another household. It will not be rebound; sync is paused.'
+    : store.householdId ? 'Local diary linked to this household'
+    : 'Local diary will link automatically after household discovery.';
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('bella-household-discovered',event => {discoveredHousehold = event.detail; renderHouseholdBinding();});
@@ -349,10 +356,10 @@ async function saveEditor(event) {
   // Editing a demo event keeps its provenance until explicitly cleared.
   const existing = editingId ? activeEvents().find(event => event.id === editingId) : null;
   if (editingId && !existing) {notify('This entry is no longer active.'); return;}
-  if (existing) {entry.createdAt = existing.createdAt; entry.serverVersion = existing.serverVersion; if (existing.demo) entry.demo = true;}
+  if (existing) {entry.createdAt = existing.createdAt; entry.serverVersion = existing.serverVersion; entry.syncBaseMutationId = existing.syncBaseMutationId; if (existing.demo) entry.demo = true;}
   try {validateEvents([entry]);} catch (error) {notify(error.message); return;}
   const id = editingId;
-  if (await commit(events => id ? events.map(event => event.id === id && isActiveEvent(event) ? {...entry, createdAt:event.createdAt, serverVersion:event.serverVersion} : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
+  if (await commit(events => id ? events.map(event => event.id === id && isActiveEvent(event) ? {...entry, createdAt:event.createdAt, serverVersion:event.serverVersion, syncBaseMutationId:event.syncBaseMutationId} : event) : [...events,entry])) {$('editor').close(); notify('Entry saved');}
 }
 
 function download(filename,content,type) {
@@ -361,7 +368,7 @@ function download(filename,content,type) {
   document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url),10000);
 }
 
-function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),demoCleared:store.demoCleared,events:store.events},null,2),'application/json');}
+function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),demoCleared:store.demoCleared,events:store.events,...(store.syncConflicts.length ? {syncConflicts:store.syncConflicts} : {})},null,2),'application/json');}
 
 function exportCSV() {
   const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','note'];
@@ -377,10 +384,10 @@ async function importJSON(file) {
     if (file.size > 10*1024*1024) throw new Error('Please choose a JSON backup smaller than 10 MB.');
     const data = JSON.parse(await file.text());
     if (!data || ![1,2].includes(data.version)) throw new Error('Please choose a version 1 or 2 Bella’s Diary JSON backup.');
-    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore({...data,version:3,householdId:store.householdId,events:data.events?.map(event => ({...event,serverVersion:event.serverVersion === undefined ? null : event.serverVersion}))});
+    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore({...data,version:4,householdId:store.householdId,syncConflicts:data.syncConflicts || [],events:data.events?.map(event => ({...event,serverVersion:event.serverVersion === undefined ? null : event.serverVersion,syncBaseMutationId:event.syncBaseMutationId === undefined ? null : event.syncBaseMutationId}))});
     const events = restored.events, count = events.filter(isActiveEvent).length;
     if (!confirm(`Import ${count} events? This REPLACES all ${activeEvents().length} current entries. Export a backup first if you want to keep them.`)) return;
-    if (await commit(events,restored.demoCleared)) notify(`Imported ${count} events`);
+    if (await commit(events,restored.demoCleared,restored.syncConflicts)) notify(`Imported ${count} events`);
   } catch (error) {notify(`Import failed: ${error instanceof SyntaxError ? 'This file is not valid JSON.' : error.message}`);}
   finally {$('import-file').value = '';}
 }
@@ -415,7 +422,6 @@ function connectEvents() {
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());
   $('import-file').addEventListener('change',event => importJSON(event.target.files[0]));
-  $('bind-household').addEventListener('click',bindLocalHousehold);
   diaryRepository.subscribe(refreshStore);
   window.addEventListener('focus',refreshStore);
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
@@ -436,5 +442,5 @@ async function setupOffline() {
   } catch (error) {$('offline-status').textContent = 'Offline caching unavailable. Serve over HTTPS or localhost.';}
 }
 
-async function initialiseApp() { $('rules').innerHTML = RULES; await loadStore(); connectEvents(); render(); renderHouseholdBinding(); setupOffline(); }
+async function initialiseApp() { $('rules').innerHTML = RULES; await loadStore(); connectEvents(); render(); renderHouseholdBinding(); setupOffline(); window.dispatchEvent(new Event('bella-diary-ready')); }
 if (typeof document !== 'undefined') initialiseApp();

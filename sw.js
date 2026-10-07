@@ -1,7 +1,7 @@
 'use strict';
 // Bump this version whenever the static shell changes.
-const CACHE = 'bellas-diary-shell-v11';
-const SHELL = ['./', './index.html', './styles.css', './storage.js', './app.js', './supabase-config.js', './auth.js', './cloud-diagnostic.js', './manifest.json', './icons/favicon.svg', './icons/icon-192.png', './icons/icon-512.png'];
+const CACHE = 'bellas-diary-shell-v13';
+const SHELL = ['./', './index.html', './styles.css', './storage.js', './app.js', './supabase-config.js', './auth.js', './cloud-diagnostic.js', './sync.js', './manifest.json', './icons/favicon.svg', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });
