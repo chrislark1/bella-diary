@@ -349,7 +349,7 @@ function connectEvents() {
     try {localStorage.setItem(WINDOW_KEY,activeWindow);} catch {notify('Could not save the pattern window on this device.');}
     renderAggregate(activeEvents());
   });
-  $('more-menu').addEventListener('click',event => {if (event.target.closest('button')) setTimeout(() => {$('more-menu').open = false;},0);});
+  $('more-menu').addEventListener('click',event => {if (event.target.closest('button') && !event.target.closest('#cloud-account')) setTimeout(() => {$('more-menu').open = false;},0);});
   document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click',() => quickAdd(button.dataset.add,button.dataset.location || 'outside')));
   $('aggregate').addEventListener('click',event => {const bucket = event.target.closest('[data-bucket-label]'); if (bucket) notify(bucket.dataset.bucketLabel);});
   document.querySelectorAll('[data-page]').forEach(button => {

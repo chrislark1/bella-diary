@@ -59,3 +59,6 @@ header .page-tabs{justify-self:auto}
 @media(max-width:640px){header .header-tools{grid-row:1;grid-column:2}.overflow-menu>summary{width:36px;height:36px}}
 .aggregate-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}.aggregate-controls label{display:inline;margin:0;font-size:10px;color:var(--muted)}.aggregate-controls select{display:inline-block;width:auto;min-width:82px;min-height:32px;margin:0;padding:5px 8px;border-color:var(--line);font-size:11px}.aggregate-controls .muted{white-space:nowrap;font-size:10px}
 @media (min-width:700px) and (max-height:850px) and (orientation:landscape){.aggregate-controls{gap:5px}.aggregate-controls select{min-height:27px;padding-block:3px}.aggregate-controls .muted{font-size:9px}}
+
+/* Account controls stay within the existing overflow menu. */
+.menu-panel{max-height:calc(100dvh - 95px);overflow-y:auto}.cloud-account{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}.cloud-account>strong{font-size:13px}.cloud-account p{margin:0;font-size:11px;line-height:1.4;overflow-wrap:anywhere}.cloud-account button:disabled{opacity:.6;cursor:default}

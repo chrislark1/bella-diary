@@ -73,8 +73,13 @@ async function loaded(frame) {
   frame.contentWindow.confirm=()=>true; // Confirm only disposable test data operations.
   return frame;
 }
-async function start(inject = '') {
-  const html = await (await fetch('../index.html')).text();
+async function start(inject = '', authConfigured = false, projectURL = 'https://auth-fixture.invalid') {
+  let html = await (await fetch('../index.html')).text();
+  // Keep auth fixtures isolated even after the real config placeholders are filled.
+  const config=authConfigured
+    ? `<script>const SUPABASE_URL=${JSON.stringify(projectURL)};const SUPABASE_PUBLISHABLE_KEY="sb_publishable_test_placeholder";<\/script>`
+    : '<script>const SUPABASE_URL="__SUPABASE_URL__";const SUPABASE_PUBLISHABLE_KEY="__SUPABASE_PUBLISHABLE_KEY__";<\/script>';
+  html=html.replace('<script src="supabase-config.js" defer></script>',config);
   const frame = document.createElement('iframe');
   frame.srcdoc = html.replace('<head>',`<head><base href="${location.origin}/"><script>window.confirm=()=>true;${inject}<\/script>`);
   frames.append(frame);
@@ -241,10 +246,10 @@ async function run() {
   // instead of treating that old controller as proof of the current precache.
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
-  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v7');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v7'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v7 cache includes every static shell file');
+  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v9');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v9'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v9 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -267,8 +272,91 @@ async function run() {
   check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===2 && frame.contentDocument.querySelectorAll('#data tbody tr').length===2 && frame.contentDocument.querySelector('#summary .metric strong').textContent==='2','F: deleted accident excluded from table, timeline and tracked-day counts');
   const activeStats=frame.contentWindow.eval('statistics(activeEvents())');
   check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
+  await authChecks(frame);
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';
+}
+
+// Stub only the auth SDK: diary persistence remains native IndexedDB throughout.
+const authFixture = `
+window.authFixture={creates:0,gets:0,starts:0,stops:0,cloudCalls:0,user:null,online:true};
+Object.defineProperty(navigator,'onLine',{get:()=>authFixture.online});
+window.supabase={createClient:(url,key,options)=>{
+  authFixture.creates++;authFixture.projectURL=url;authFixture.options=options;
+  return {from:()=>{authFixture.cloudCalls++;throw new Error('No diary API allowed');},auth:{
+    getSession:async()=>{authFixture.gets++;if(authFixture.hang)return new Promise(()=>{});return {data:{session:authFixture.user?{user:authFixture.user}:null},error:authFixture.fail?new Error('Auth failed'):null};},
+    onAuthStateChange:callback=>{authFixture.emit=(event,user)=>{authFixture.user=user;callback(event,user?{user}:null);};return {data:{subscription:{unsubscribe(){}}}};},
+    signInWithOAuth:async options=>{authFixture.oauth=options;return {error:null};},
+    signOut:async options=>{authFixture.signOut=options;if(authFixture.signOutFails)return {error:new Error('Outage')};authFixture.emit('SIGNED_OUT',null);return {error:null};},
+    startAutoRefresh:()=>{authFixture.starts++;},stopAutoRefresh:()=>{authFixture.stops++;}
+  }};
+}};`;
+async function authChecks(diaryFrame) {
+  const before=await databaseContents();
+  const status=frame=>frame.contentDocument.getElementById('auth-status').textContent;
+  let frame=await start();
+  await waitFor(()=>status(frame).includes('Account setup needed'),'placeholder auth UI');
+  check(status(frame).includes('Account setup needed') && frame.contentDocument.getElementById('auth-action').disabled,'G: placeholder config disables auth without blocking diary');frame.remove();
+  const blockCDN=`window.cdnAttempts=0;const append=HTMLHeadElement.prototype.append;HTMLHeadElement.prototype.append=function(...nodes){if(nodes.some(node=>node.src?.startsWith('https://cdn.jsdelivr.net/'))){cdnAttempts++;queueMicrotask(()=>nodes[0].dispatchEvent(new Event('error')));return;}return append.apply(this,nodes);};`;
+  frame=await start(blockCDN,true);
+  await waitFor(()=>status(frame).includes('Account unavailable'),'blocked CDN UI');
+  check(frame.contentWindow.cdnAttempts===1 && frame.contentDocument.querySelector('#summary .metric'),'G: failed CDN load leaves diary running');
+  await click(frame,'[data-add="wee"]');
+  check((await databaseContents()).events.length===before.events.length+1,'G: actual IndexedDB recording works after CDN failure');frame.remove();
+  const afterRecord=await databaseContents();
+  frame=await start(authFixture+'authFixture.fail=true;',true);
+  await waitFor(()=>status(frame).includes('Account unavailable'),'auth outage UI');
+  check(!blocked(frame) && same(await databaseContents(),afterRecord),'G: auth initialization failure does not block or modify diary');frame.remove();
+  frame=await start(authFixture+'authFixture.hang=true;',true);
+  await waitFor(()=>status(frame).includes('Checking account'),'pending auth UI');
+  check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length>0 && status(frame).includes('Checking account'),'G: pending auth request does not delay diary startup');frame.remove();
+  frame=await start(authFixture,true);
+  await waitFor(()=>status(frame).startsWith('Not signed in'),'signed-out auth UI');
+  check(frame.contentDocument.getElementById('auth-action').textContent==='Sign in with Google','G: signed-out account UI renders correctly');
+  const fixture=frame.contentWindow.authFixture;
+  check(fixture.projectURL==='https://auth-fixture.invalid','H: createClient receives exactly the base project URL');
+  check(fixture.creates===1 && fixture.options.auth.persistSession && fixture.options.auth.autoRefreshToken && fixture.options.auth.detectSessionInUrl && fixture.options.auth.flowType==='pkce','G: exactly one client uses browser persistence, refresh and PKCE detection');
+  await click(frame,'#auth-action');await waitFor(()=>fixture.oauth,'Google action');
+  check(fixture.oauth.provider==='google' && fixture.oauth.options.redirectTo===location.origin+'/' && fixture.creates===1,'G: Google action uses app-root redirect and reuses client');
+  fixture.emit('SIGNED_IN',{email:'fixture@example.invalid',user_metadata:{full_name:'Chris <b>test</b>'}});
+  check(status(frame)==='Signed in · cloud sync not enabled yet' && frame.contentDocument.getElementById('auth-identity').textContent==='Chris <b>test</b> · fixture@example.invalid' && !frame.contentDocument.querySelector('#auth-identity b'),'G: signed-in identity is safely rendered as text');
+  fixture.emit('TOKEN_REFRESHED',fixture.user);
+  check(same(await databaseContents(),afterRecord) && fixture.cloudCalls===0,'G: auth state/refresh rendering neither modifies diary nor queries cloud diary tables');
+  fixture.online=false;frame.contentWindow.dispatchEvent(new frame.contentWindow.Event('offline'));
+  await waitFor(()=>fixture.stops>0,'offline refresh pause');
+  check(status(frame).startsWith('Offline') && !frame.contentDocument.getElementById('auth-identity').hidden && frame.contentDocument.getElementById('auth-action').disabled,'G: offline keeps known identity and pauses auth actions/refresh');
+  let fetches=0;const nativeFetch=frame.contentWindow.fetch;frame.contentWindow.fetch=()=>{fetches++;return Promise.resolve();};
+  try {await fixture.options.global.fetch('/must-not-fetch');} catch {}
+  frame.contentWindow.fetch=nativeFetch;
+  check(fetches===0,'G: offline auth transport makes no network request');
+  fixture.online=true;frame.contentWindow.dispatchEvent(new frame.contentWindow.Event('online'));
+  check(status(frame).startsWith('Signed in') && !frame.contentDocument.getElementById('auth-action').disabled,'G: reconnect preserves session identity');
+  fixture.signOutFails=true;await click(frame,'#auth-action');
+  await waitFor(()=>frame.contentDocument.getElementById('auth-action').textContent==='Sign out','failed sign-out completes');
+  check(status(frame).startsWith('Signed in') && !frame.contentDocument.getElementById('auth-error').hidden,'G: failed sign-out retains signed-in identity');
+  fixture.signOutFails=false;await click(frame,'#auth-action');
+  await waitFor(()=>status(frame).startsWith('Not signed in'),'sign-out completes');
+  check(fixture.signOut.scope==='local' && same(await databaseContents(),afterRecord),'G: local-scope Supabase sign-out preserves diary, tombstones and demo state');
+  frame.remove();
+  frame=await start(authFixture+`Object.defineProperty(document,'currentScript',{get:()=>({src:new URL(document.baseURI).origin+'/bella-diary/auth.js?version=1#ignored'})});`,true);
+  await waitFor(()=>status(frame).startsWith('Not signed in'),'production-path auth UI');
+  await click(frame,'#auth-action');await waitFor(()=>frame.contentWindow.authFixture.oauth,'production-path OAuth action');
+  check(frame.contentWindow.authFixture.oauth.options.redirectTo===location.origin+'/bella-diary/','G: GitHub Pages path is retained while query/fragment are discarded');frame.remove();
+  frame=await start(authFixture+'authFixture.online=false;',true);
+  await waitFor(()=>status(frame).startsWith('Offline'),'offline auth UI');
+  check(status(frame).startsWith('Offline') && frame.contentWindow.authFixture.creates===0 && !blocked(frame),'G: configured offline startup skips SDK/auth while loading diary');frame.remove();
+  for (const suffix of ['/rest/v1','/auth/v1','/?unexpected=1','/#unexpected']) {
+    frame=await start(authFixture,true,'https://auth-fixture.invalid'+suffix);
+    await waitFor(()=>status(frame).includes('Account setup needed'),'non-base URL rejected');
+    check(frame.contentWindow.authFixture.creates===0 && frame.contentDocument.getElementById('auth-action').disabled && !blocked(frame),'H: API path/query/fragment cannot reach createClient; diary remains available');frame.remove();
+  }
+  frame=await start(authFixture,true,'https://auth-fixture.invalid/');
+  await waitFor(()=>status(frame).startsWith('Not signed in'),'root slash accepted');
+  check(frame.contentWindow.authFixture.projectURL==='https://auth-fixture.invalid','H: root trailing slash is normalized to project origin');frame.remove();
+  const sources=await Promise.all(['../index.html','../app.js','../storage.js','../auth.js','../supabase-config.js','../sw.js','../README.md'].map(async path=>(await (await fetch(path)).text())));
+  const credentialPattern=/sb_secret_[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
+  check(sources.every(source=>!credentialPattern.test(source)),'G: application/config/docs contain no secret keys or credential JWTs');
+  await diaryFrame.contentWindow.eval('mutationQueue');
 }
 
 async function offline() {

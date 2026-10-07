@@ -1,6 +1,6 @@
 # Bella's Diary
 
-A small offline-first puppy house-training diary for Bella. Vanilla HTML, CSS and JavaScript; no build, dependencies, accounts, backend, analytics or remote sync.
+A small offline-first puppy house-training diary for Bella. Vanilla HTML, CSS and JavaScript; no build system, analytics or diary sync. Optional Google sign-in uses Supabase; diary data stays local.
 
 ## Run
 
@@ -18,6 +18,8 @@ Then open http://localhost:8080. The Python process stays running in the termina
 - `styles.css`: responsive layout with a shared timeline plotting grid.
 - `app.js`: diary behavior, filtering, rendering, editing, statistics and backups.
 - `storage.js`: asynchronous whole-diary repository, native IndexedDB persistence and legacy migration.
+- `supabase-config.js`: Project URL and browser publishable-key placeholders.
+- `auth.js`: independent Google authentication; pinned CDN client and account controls.
 - `manifest.json`: standalone installation metadata.
 - `sw.js`: complete offline app-shell cache.
 - `icons/`: 192px and 512px PNG icons and SVG favicon.
@@ -42,7 +44,7 @@ Diary schema version 2 (previously 1) requires `createdAt`, `updatedAt`, `delete
 
 On first use of IndexedDB, an existing `bellaDiary.store` localStorage diary is parsed and passed through the app's existing validation before migration. Only a successful transaction marks IndexedDB initialized. Later launches use IndexedDB directly. The original localStorage value is deliberately left untouched as a rollback snapshot: new events, edits and imports do not update it. A fresh browser with neither diary seeds the usual demo through the repository once; clearing demo data remains permanent across reloads. Initialization checks inside the write transaction prevent two starting windows from overwriting each other's first diary.
 
-The separate `bellaDiary.aggregateWindow` preference remains in localStorage. Other diary windows refresh after BroadcastChannel save notifications when available, and when focused or made visible. Saves within one window are queued so rapid recording keeps each entry. Whole-diary replacement still means simultaneous edits in different windows can overwrite one another; conflict handling belongs to a later sync stage. There is no cloud sync or account system.
+The separate `bellaDiary.aggregateWindow` preference remains in localStorage. Other diary windows refresh after BroadcastChannel save notifications when available, and when focused or made visible. Saves within one window are queued so rapid recording keeps each entry. Whole-diary replacement still means simultaneous edits in different windows can overwrite one another; conflict handling belongs to a later sync stage. Google authentication is separate from diary persistence; cloud sync is not implemented.
 
 `createdAt` and `updatedAt` are canonical UTC ISO instants from `new Date().toISOString()`. Creation sets them equal; edits preserve creation and replace update time. `deletedAt` is null while active. Every create/edit/delete also mints a local opaque `mutationId` without user identity. Rendering and loading do not change metadata. Future reconciliation for the same event ID should prefer greater `updatedAt`, then lexically greater `mutationId` using binary ASCII comparison, never locale or object order. Identical mutation IDs represent the same change; conflicting payloads with the same timestamp and mutation ID should be treated as corrupt rather than ordered arbitrarily. No merge engine is implemented here. Device clock skew and simultaneous whole-diary writes must be addressed before cloud sync.
 
@@ -62,11 +64,33 @@ After the first successful online load, wait for **Ready for offline use**. The 
 
 On iPad Safari, serve the static directory from a suitable HTTPS origin, open it, then choose Share → Add to Home Screen. Plain HTTP at a computer's LAN IP is not a suitable secure origin for service workers; `localhost` on iPad refers to the iPad itself. Installation should be checked on the target iPad. Browser storage may be evicted, so an installed PWA is not a substitute for backups.
 
-For app updates, bump `CACHE` in `sw.js` whenever shell files change. The new worker precaches the new shell before activation, removes only old Bella's Diary shell caches, and never touches diary storage. Reload after the update activates. The app makes no external requests.
+For app updates, bump `CACHE` in `sw.js` whenever shell files change. The new worker precaches the new shell before activation, removes only old Bella's Diary shell caches, and never touches diary storage. Reload after the update activates. Only optional authentication loads the pinned Supabase library and contacts Supabase/Google. The service worker handles same-origin files only; it does not intercept or cache CDN or Supabase requests.
+
+## Google sign-in (Stage 4B)
+
+Replace `__SUPABASE_URL__` and `__SUPABASE_PUBLISHABLE_KEY__` in `supabase-config.js` with the Supabase **Project URL** and **publishable key** from the project dashboard. Use the `sb_publishable_...` key, not a legacy JWT key. The Project URL must be the HTTPS origin only, without `/rest/v1`, `/auth/v1`, query parameters or a fragment; API paths are rejected before client initialization. A root trailing slash is normalized away. These values are browser-safe configuration; authorization relies on Stage 4A RLS. Never commit a database password, service-role/secret credential or Google client secret. Until configured, authentication is disabled and the local diary remains available.
+
+The **··· > Cloud account** section offers Google sign-in, name/email and sign-out. It always explains that cloud sync is not enabled. `auth.js` independently loads the official UMD client pinned at `@supabase/supabase-js@2.117.2` from jsDelivr. The SDK manages persisted sessions, token refresh and PKCE callback detection. No Google provider tokens are separately stored and no diary/household/membership tables are queried. See [Supabase initialization](https://supabase.com/docs/reference/javascript/initializing) and [OAuth sign-in](https://supabase.com/docs/reference/javascript/auth-signinwithoauth).
+
+The redirect is the same-origin directory containing `auth.js`, with a trailing slash and no query/hash: normally `https://chrislark1.github.io/bella-diary/` for GitHub Pages and `http://localhost:8080/` for development. Custom domains/paths are derived automatically; an HTTP `index.html` URL redirects to its directory too. Supabase must allow the exact roots in use (`localhost` and `127.0.0.1` are separate origins). After SDK callback processing, auth parameters are cleaned from the URL. Raw provider/SDK errors are never displayed or logged.
+
+Auth failures and bounded startup/action waits never delay IndexedDB startup. Offline account actions and refresh pause, while a known identity stays visible in the current window with **Offline · session not checked**. On an offline cold launch without a loaded CDN client, status is unavailable rather than assumed signed out. There is no separate identity/token cache: reconnect to load/check the SDK session. The local auth/config files join the static shell cache; the CDN bundle and Supabase API responses do not.
+
+Sign-out uses Supabase's local session scope, leaving other devices signed in. It does not clear IndexedDB, legacy diary storage, demo state, preferences or downloaded backups. **IndexedDB remains shared by the browser profile, without user/household partitioning.** Another signed-in account sees the same local diary at this stage. Account/data isolation must be addressed before multi-user sync; a locally displayed identity is not proof of server authorization.
+
+Manual sign-in check:
+
+1. Replace the two placeholders and deploy/serve the files. If configuration was already cached, bump the service-worker cache version again and reload online after activation.
+2. Confirm the actual app-root redirect is allowed in Supabase. Choose **··· > Cloud account > Sign in with Google**, finish Google sign-in and verify return to the same root with name/email and **Signed in · cloud sync not enabled yet**. Check callback code/error parameters disappear.
+3. Reload and close/reopen in the same origin/browser profile; verify session restoration where persistence permits. Test localhost and production, iPad Safari and the Home Screen app. OAuth can open Safari in a different storage context; PKCE needs the initiating context's verifier. If Safari and the installed PWA have separate storage, complete sign-in in the same context and do not assume session transfer.
+4. Go offline after caching. Record, edit and delete entries, reload and confirm persistence. Account controls must explain offline status; a session cannot be verified offline.
+5. Reconnect and sign out; confirm diary/demo state remains after reload. Auth-only actions must not call `diary_events`, `households` or `household_members`.
+
+Once Chris and Louise sign in, verify their exact `auth.users.id` values and run the Stage 4A manual household seed as admin if Bella has not already been seeded. This stage does not create memberships. Before upload/sync, audit non-UUID legacy IDs, exclude demo records, implement user/household cache isolation and resolve clock skew/conflict/cursor/tombstone-retention rules.
 
 ## Persistence acceptance checks
 
-Run `python -m http.server 8137 --bind 127.0.0.1` in this directory, then open `http://127.0.0.1:8137/tests/indexeddb.html` and run the checks. The dependency-free browser suite uses real IndexedDB and the production app. It resets only that disposable test origin and refuses to run elsewhere. After the online checks pass, stop the server with Ctrl+C and use the offline-check button in the already open test page. The suite covers migration and rollback retention, first-run demo behavior, recording/editing/deleting, backups, failures, multiple windows and cached offline creation/editing/deletion/reloads. It also checks version-1 IndexedDB upgrades and rollback, strict metadata validation, immutable creation metadata, retained tombstones across views and JSON restores, version-1 backup compatibility, and physical demo purging. Test files are not part of the service-worker shell. Run these checks in Safari on the target iPad as well as a desktop browser.
+Run `python -m http.server 8137 --bind 127.0.0.1` in this directory, then open `http://127.0.0.1:8137/tests/indexeddb.html` and run the checks. The browser suite has no test dependencies and uses real IndexedDB and the production app. It preserves the 85 persistence checks and adds SDK-stub tests for CDN failures, auth outages/pending requests, account UI, client options, offline behavior and sign-out/data isolation. It does not automate Google or contact a live auth project. It resets only that disposable test origin and refuses to run elsewhere. After the online checks pass, stop the server with Ctrl+C and use the offline-check button in the already open test page. The suite covers migration and rollback retention, first-run demo behavior, recording/editing/deleting, backups, failures, multiple windows and cached offline creation/editing/deletion/reloads. It also checks version-1 IndexedDB upgrades and rollback, strict metadata validation, immutable creation metadata, retained tombstones across views and JSON restores, version-1 backup compatibility, and physical demo purging. Test files are not part of the service-worker shell. For an optional regression using the exact pinned CDN bundle, run `node tests/oauth-sdk.cjs` with network access. It uses a fake publishable key and `skipBrowserRedirect`, verifies separate Auth/REST endpoints and both redirect URLs, and makes no Supabase/Google requests. Run these checks in Safari on the target iPad as well as a desktop browser.
 
 ## Statistics rules
 
