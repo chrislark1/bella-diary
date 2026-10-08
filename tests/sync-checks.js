@@ -39,6 +39,7 @@ window.cloudFrom=table=>{
 };
 `;
 async function syncChecks() {
+  await demoRemovalChecks();
   await automaticBindingChecks();
   await activeReturnChecks();
   const household='00000000-0000-4000-8000-000000000001', id=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
@@ -184,4 +185,33 @@ async function activeReturnChecks() {
   check(snapshotCount()===count && state(frame).householdId===household && frame.contentDocument.getElementById('sync-status').textContent.includes('mismatch'),'M: activation on household mismatch never pulls, writes or rebinds');
   check(a.creates===1,'M: active-return triggers reuse the sole existing Auth client');
   frame.remove();
+}
+
+async function demoRemovalChecks() {
+  const household='00000000-0000-4000-8000-000000000001',instant='2026-10-08T08:00:00.000Z';
+  const event=(n,extra={})=>({id:'00000000-0000-4000-8000-'+String(n).padStart(12,'0'),type:'wee',datetime:'2026-10-08T08:00',location:'outside',note:'preserve '+n,createdAt:instant,updatedAt:instant,deletedAt:null,mutationId:'saved-'+n,serverVersion:1,syncBaseMutationId:'saved-'+n,...extra});
+  const real=[event(201),event(202,{deletedAt:instant})],demos=[event(203,{demo:true}),event(204,{demo:true,deletedAt:instant})];
+  const conflicts=[{id:real[0].id,cloud:event(201,{note:'cloud conflict',mutationId:'cloud-201',syncBaseMutationId:'cloud-201',serverVersion:2})},{id:demos[0].id,cloud:event(203)}];
+  const mixed={version:4,householdId:household,demoCleared:false,events:[real[0],demos[0],real[1],demos[1]],syncConflicts:conflicts};
+  await reset();await seedStage2({...mixed,events:demos,syncConflicts:[]},4);let frame=await start();
+  check((await databaseContents()).events.length===0 && state(frame).events.length===0,'N: existing demo-only diary physically purges active and tombstoned samples');frame.remove();
+  await reset();await seedStage2(mixed,4);frame=await start();let saved=state(frame),db=await databaseContents();
+  check(same(saved.events,real) && same(db.events,real),'N: mixed diary preserves real payloads, order, mutations, versions and tombstones exactly');
+  check(saved.householdId===household && same(saved.syncConflicts,[conflicts[0]]),'N: purge preserves household binding and real conflicts, discarding demo conflicts');
+  check(!db.events.some(e=>e.demo===true) && !db.events.some(e=>e.id===demos[0].id||e.id===demos[1].id),'N: demo purge physically removes rows instead of generating deletion mutations');
+  await reload(frame);check(same(await databaseContents(),db),'N: automatic demo purge is idempotent across reload');
+  await importBackup(frame,{version:2,demoCleared:false,events:mixed.events,syncConflicts:conflicts});
+  check(same(state(frame).events,real) && same(state(frame).syncConflicts,[conflicts[0]]),'N: old version 2 JSON accepts demos safely and retains only real entries/conflicts');
+  await importBackup(frame,{version:1,demoCleared:false,events:[{id:'old-real',type:'wee',datetime:'2026-10-08T08:00',location:'outside',note:'old real'},{id:'old-demo',type:'wee',datetime:'2026-10-08T08:00',location:'outside',demo:true}]});
+  check(state(frame).events.length===1 && state(frame).events[0].id==='old-real' && validMetadata(state(frame).events[0]),'N: version 1 demo backups upgrade safely without retaining sample rows');frame.remove();
+  await reset();await seedStage2(mixed,4);const beforeFailure=await databaseContents();
+  frame=await start("const add=IDBObjectStore.prototype.add;IDBObjectStore.prototype.add=function(value){const req=add.call(this,value);req.addEventListener('success',()=>this.transaction.abort(),{once:true});return req;};");
+  check(blocked(frame) && same(await databaseContents(),beforeFailure),'N: failed purge rolls back all real/demo rows, conflicts and binding');await reload(frame);
+  check(same(state(frame).events,real) && state(frame).householdId===household,'N: failed purge can recover on reload without losing real data');frame.remove();
+  await reset();await seedStage2({...mixed,syncConflicts:[]},4);frame=await start(syncFixture,true,'https://auth-fixture.invalid',true);const win=frame.contentWindow,f=win.cloudFixture;
+  const row=e=>({id:e.id,household_id:household,type:e.type,datetime:e.datetime,location:e.location,note:e.note,poo_consistency:null,meal_food:null,meal_amount:null,demo:e.demo===true,client_created_at:e.createdAt,client_updated_at:e.updatedAt,deleted_at:e.deletedAt,mutation_id:e.mutationId,server_version:e.serverVersion});
+  for(const e of [...real,...demos])f.rows.set(e.id,row(e));const cloudBefore=Array.from(f.rows.values());win.authFixture.emit('SIGNED_IN',{id:'fixture-user'});
+  await waitFor(()=>frame.contentDocument.getElementById('sync-status').textContent==='Synced','post-purge sync');await win.eval('mutationQueue');
+  check(!f.calls.some(c=>c.op!=='select') && same(Array.from(f.rows.values()),cloudBefore),'N: demo removal generates no cloud inserts, updates or deletes; diagnostic rows are untouched');
+  check(same(state(frame).events,real),'N: normal sync never reimports cloud diagnostic/demo rows after purge');frame.remove();
 }

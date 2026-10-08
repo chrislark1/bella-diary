@@ -34,28 +34,6 @@ const median = values => {if (values.length < MIN_SAMPLES) return null; const a 
 const duration = value => value == null ? '—' : value < 60 ? `${Math.round(value)} min` : `${Math.floor(Math.round(value)/60)} h ${Math.round(value)%60} min`;
 const clockTime = value => value == null ? '—' : `${pad(Math.floor(Math.round(value)/60)%24)}:${pad(Math.round(value)%60)}`;
 
-function demoWeek(now = new Date()) {
-  const events = [];
-  for (let daysAgo = 6; daysAgo >= 0; daysAgo--) {
-    const day = new Date(now); day.setDate(day.getDate() - daysAgo);
-    const shift = [0, 8, -7, 12, -4, 5, -9][6-daysAgo];
-    const schedule = [
-      ['wee', 370], ['meal', 420], ['wee', 445], ['poo', 465], ['wee', 570],
-      ['wee', 680], ['meal', 750], ['wee', 780], ['poo', 820], ['wee', 920],
-      ['meal', 1080], ['wee', 1110], ['wee', 1225], ['wee', 1320]
-    ];
-    schedule.forEach(([type, minute], index) => {
-      const adjusted = minute + shift + (index%3)*3;
-      const event = {id:uniqueId(), type, datetime:`${localDate(day)}T${pad(Math.floor(adjusted/60))}:${pad(adjusted%60)}`, note:'', demo:true, ...eventMetadata()};
-      if (type === 'meal') {event.mealFood = 'Puppy kibble'; event.mealAmount = '80 g';}
-      else {event.location = (daysAgo === 5 && index === 4) || (daysAgo === 3 && index === 7) ? 'inside' : 'outside'; if (type === 'poo') event.pooConsistency = daysAgo === 3 ? 'Soft' : 'Normal';}
-      if (accident(event)) event.note = 'A little too late getting outside';
-      events.push(event);
-    });
-  }
-  return events;
-}
-
 // Reject invalid dates, duplicate IDs and irrelevant/unrecognised fields.
 function validateEvents(input) {
   if (!Array.isArray(input)) throw new Error('The file must contain an events array.');
@@ -100,7 +78,7 @@ function validateEvents(input) {
   });
 }
 
-let store = {version:4, householdId:null, demoCleared:false, events:[], syncConflicts:[]};
+let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
 let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
 let storageBlocked = false;
@@ -136,13 +114,29 @@ function upgradeStore(saved) {
   return validateStore({version:4, householdId:null, syncConflicts:[], demoCleared:saved.demoCleared, events:saved.events.map(event => ({...event, ...eventMetadata(now)}))});
 }
 
+// Keep the legacy demo field/backup format, but never retain sample diary rows.
+function discardDemo(saved) {
+  const events = saved.events.filter(event => event.demo !== true);
+  const ids = new Set(events.map(event => event.id));
+  return {...saved,events,demoCleared:true,syncConflicts:saved.syncConflicts.filter(copy => ids.has(copy.id))};
+}
+
 async function loadStore() {
   try {
     const saved = await diaryRepository.load(upgradeStore);
     if (saved !== null) {
       store = validateStore(saved);
+      if (saved.events.some(event => event.demo === true)) {
+        // Purge the latest committed diary atomically; this is not a mutation
+        // or tombstone and must not dispatch a cloud-write trigger.
+        const result = await diaryRepository.transact(current => {
+          validateStore(current);
+          return discardDemo(current);
+        });
+        store = validateStore(result.store);
+      }
     } else {
-      const initialStore = {version:4, householdId:null, demoCleared:false, events:demoWeek(),syncConflicts:[]};
+      const initialStore = {version:4, householdId:null, demoCleared:true, events:[],syncConflicts:[]};
       await diaryRepository.save(initialStore, {initializeOnly:true});
       store = validateStore(await diaryRepository.load(upgradeStore));
     }
@@ -233,8 +227,6 @@ function renderHeader(events) {
   const today = events.filter(event => dateOf(event) === localDate(new Date()));
   const metrics = [[new Set(events.map(dateOf)).size,'Days tracked'], ...TYPES.map(type => [today.filter(event => event.type === type).length, `Today's ${type === 'wee' ? 'wees' : type === 'poo' ? 'poos' : 'meals'}`]), [streak(events),'Days accident-free']];
   $('summary').innerHTML = metrics.map(([value,label]) => `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`).join('');
-  const hasDemo = events.some(event => event.demo);
-  $('demo-label').hidden = !hasDemo; $('clear-demo').hidden = !hasDemo;
 }
 
 function hourlyDistribution(events, type, trackedDays) {
@@ -353,7 +345,7 @@ async function saveEditor(event) {
   const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note'), ...eventMetadata()};
   if (entry.type === 'meal') {entry.mealFood = value('mealFood'); entry.mealAmount = value('mealAmount');}
   else {entry.location = value('location'); if (entry.type === 'poo') entry.pooConsistency = value('pooConsistency');}
-  // Editing a demo event keeps its provenance until explicitly cleared.
+  // Preserve existing creation metadata and accepted sync baseline.
   const existing = editingId ? activeEvents().find(event => event.id === editingId) : null;
   if (editingId && !existing) {notify('This entry is no longer active.'); return;}
   if (existing) {entry.createdAt = existing.createdAt; entry.serverVersion = existing.serverVersion; entry.syncBaseMutationId = existing.syncBaseMutationId; if (existing.demo) entry.demo = true;}
@@ -384,7 +376,7 @@ async function importJSON(file) {
     if (file.size > 10*1024*1024) throw new Error('Please choose a JSON backup smaller than 10 MB.');
     const data = JSON.parse(await file.text());
     if (!data || ![1,2].includes(data.version)) throw new Error('Please choose a version 1 or 2 Bella’s Diary JSON backup.');
-    const restored = data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore({...data,version:4,householdId:store.householdId,syncConflicts:data.syncConflicts || [],events:data.events?.map(event => ({...event,serverVersion:event.serverVersion === undefined ? null : event.serverVersion,syncBaseMutationId:event.syncBaseMutationId === undefined ? null : event.syncBaseMutationId}))});
+    const restored = discardDemo(data.version === 1 ? upgradeStore({...data, demoCleared:true}) : validateStore({...data,version:4,householdId:store.householdId,syncConflicts:data.syncConflicts || [],events:data.events?.map(event => ({...event,serverVersion:event.serverVersion === undefined ? null : event.serverVersion,syncBaseMutationId:event.syncBaseMutationId === undefined ? null : event.syncBaseMutationId}))}));
     const events = restored.events, count = events.filter(isActiveEvent).length;
     if (!confirm(`Import ${count} events? This REPLACES all ${activeEvents().length} current entries. Export a backup first if you want to keep them.`)) return;
     if (await commit(events,restored.demoCleared,restored.syncConflicts)) notify(`Imported ${count} events`);
@@ -418,7 +410,6 @@ function connectEvents() {
   $('event-form').addEventListener('submit',saveEditor);
   for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click',() => $('editor').close());
   $('delete-event').addEventListener('click',async () => {const id = editingId; if (id && confirm('Delete this entry?') && await commit(events => {const now = new Date().toISOString(); return events.map(event => event.id === id && isActiveEvent(event) ? {...event, updatedAt:now, deletedAt:now, mutationId:uniqueId()} : event);})) {$('editor').close(); notify('Entry deleted');}});
-  $('clear-demo').addEventListener('click',async () => {if (confirm('Clear illustrative demo entries? Entries you added yourself will stay. Edited demo entries will also be removed.')) {if (await commit(events => events.filter(event => !event.demo),true)) notify('Demo cleared. Ready for Bella’s own diary.');}});
   $('export-json').addEventListener('click',exportJSON); $('export-csv').addEventListener('click',exportCSV);
   $('import-json').addEventListener('click',() => $('import-file').click());
   $('import-file').addEventListener('change',event => importJSON(event.target.files[0]));
@@ -430,7 +421,7 @@ function connectEvents() {
   setInterval(() => {const date = localDate(new Date()); if (date !== lastDate) {lastDate = date; render();}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p><p>Demo entries are illustrative, including a full example day for today. Clear demo data before starting your own records; any entries you added yourself will stay.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}

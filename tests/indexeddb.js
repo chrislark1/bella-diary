@@ -135,16 +135,11 @@ async function run() {
   check(same(state(frame),migrated) && !blocked(frame),'A: initialized IndexedDB ignores corrupt legacy snapshot');
 
   await reset(); const starting=await Promise.all([start(),start()]); frame=starting[0];
-  check(state(frame).events.every(e=>validMetadata(e) && e.deletedAt===null),'B: all demo events receive valid metadata');
-  check(state(frame).events.length===98,'B: fresh origin seeds seven-day demo');
-  check(same(state(starting[0]),state(starting[1])) && (await databaseContents()).events.length===98,'B: simultaneous first launches initialize once');
-  const seeded=state(frame); await reload(frame);
-  check(same(state(frame),seeded),'B: reload neither duplicates nor regenerates demo');
-  frame.contentDocument.getElementById('more-menu').open=true; await click(frame,'#clear-demo');
-  await reload(frame);
-  check((await databaseContents()).events.length===0,'B: clearing demo physically purges its records');
-  check(frame.contentDocument.getElementById('demo-label').hidden && frame.contentDocument.getElementById('clear-demo').hidden,'B: demo controls stay hidden after clearing/reload');
-  check(state(frame).events.length===0 && state(frame).demoCleared,'B: cleared demo stays cleared after reload');
+  check(state(frame).events.length===0 && state(frame).demoCleared,'B: fresh storage initializes an empty production diary');
+  check(same(state(starting[0]),state(starting[1])) && (await databaseContents()).events.length===0,'B: simultaneous first launches initialize once without sample events');
+  const seeded=state(frame);await reload(frame);
+  check(same(state(frame),seeded),'B: reload preserves empty initialization');
+  check(!frame.contentDocument.getElementById('demo-label') && !frame.contentDocument.getElementById('clear-demo'),'B: user-facing demo controls are removed');
   check(localStorage.getItem(KEY)===null,'B: fresh IndexedDB diary creates no legacy localStorage copy');
   starting[1].remove();
 
@@ -249,9 +244,9 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v14');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v14'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v14 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v15');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v15'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v15 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -264,7 +259,7 @@ async function run() {
   const demoRecords=beforeDemoPurge.events.map((e,index)=>({...e,id:`demo-${index}`,demo:true}));
   demoRecords[0].deletedAt=demoRecords[0].updatedAt;
   await importBackup(frame,{version:2,demoCleared:false,events:[...beforeDemoPurge.events,...demoRecords]});
-  await click(frame,'#clear-demo');await reload(frame);
+  await reload(frame);
   check(same(state(frame).events,beforeDemoPurge.events) && !(await databaseContents()).events.some(e=>e.demo),'F: demo purge removes active/deleted demos and preserves real records');
   await importBackup(frame,beforeDemoPurge);
   const peerDelete=await start();
