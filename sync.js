@@ -189,6 +189,13 @@
   window.addEventListener('bella-local-save',requestSync);
   window.addEventListener('bella-diary-ready',requestSync);
   window.addEventListener('online',requestSync);
+  // Focus and visibility often arrive together. The existing scheduled/in-flight
+  // cycle already covers this return; leave queued local-save triggers alone.
+  const activeAgain = () => {if (!running && scheduled === null) requestSync();};
+  window.addEventListener('focus',activeAgain);
+  document.addEventListener('visibilitychange',() => {
+    if (document.visibilityState === 'visible') activeAgain();
+  });
   window.addEventListener('offline',() => {generation++; queued = false; controller?.abort(); render();});
   window.addEventListener('bella-auth-change',() => {
     const next = window.bellaAuth?.getUser()?.id || null;

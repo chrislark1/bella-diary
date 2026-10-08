@@ -40,6 +40,7 @@ window.cloudFrom=table=>{
 `;
 async function syncChecks() {
   await automaticBindingChecks();
+  await activeReturnChecks();
   const household='00000000-0000-4000-8000-000000000001', id=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
   const instant='2026-10-07T08:00:00.000Z';
   const event=(n,extra={})=>({id:id(n),type:'wee',datetime:'2026-10-07T08:00',note:'record '+n,location:'outside',createdAt:instant,updatedAt:instant,deletedAt:null,mutationId:'local-'+n,serverVersion:null,syncBaseMutationId:null,...extra});
@@ -151,5 +152,36 @@ async function automaticBindingChecks() {
   frame=await start(syncFixture+"authFixture.user={id:'fixture-user'};",true,'https://auth-fixture.invalid',true);win=frame.contentWindow;
   await waitFor(()=>frame.contentDocument.getElementById('sync-status').textContent.includes('attention'),'already-bound startup reconciliation');
   check((await win.eval('diaryRepository.load(upgradeStore)')).householdId===household && win.cloudFixture.calls.some(c=>c.range) && win.authFixture.creates===1,'L: already-bound authenticated startup reconciles in the background without user action');
+  frame.remove();
+}
+
+async function activeReturnChecks() {
+  const household='00000000-0000-4000-8000-000000000001',instant='2026-10-08T08:00:00.000Z';
+  await reset();await seedStage2({version:4,householdId:household,demoCleared:true,syncConflicts:[],events:[]},4);
+  const frame=await start(syncFixture+"Object.defineProperty(document,'visibilityState',{get:()=>cloudFixture.visibility||'visible'});",true,'https://auth-fixture.invalid',true);
+  const win=frame.contentWindow,f=win.cloudFixture,a=win.authFixture;
+  const snapshotCount=()=>f.calls.filter(c=>c.range).length;
+  const settled=async()=>{await waitFor(()=>!frame.contentDocument.getElementById('sync-now').disabled,'active-return sync finishes');await delay(30);await win.eval('mutationQueue');};
+  const visible=()=>frame.contentDocument.dispatchEvent(new win.Event('visibilitychange'));
+  const focus=()=>win.dispatchEvent(new win.Event('focus'));
+  const row=n=>({id:'00000000-0000-4000-8000-'+String(n).padStart(12,'0'),household_id:household,type:'wee',datetime:'2026-10-08T08:00',location:'outside',note:'other device '+n,poo_consistency:null,meal_food:null,meal_amount:null,demo:false,client_created_at:instant,client_updated_at:instant,deleted_at:null,mutation_id:'remote-'+n,server_version:1});
+  a.emit('SIGNED_IN',{id:'fixture-user'});await settled();let count=snapshotCount();
+  f.visibility='hidden';visible();await delay(30);
+  check(snapshotCount()===count,'M: hiding the tab does not trigger sync');
+  const first=row(101);f.rows.set(first.id,first);f.visibility='visible';visible();await settled();
+  check(snapshotCount()===count+1 && state(frame).events.some(e=>e.id===first.id),'M: returning to a visible tab syncs and displays another device entry');
+  count=snapshotCount();const second=row(102);f.rows.set(second.id,second);focus();await settled();
+  check(snapshotCount()===count+1 && state(frame).events.some(e=>e.id===second.id),'M: window focus syncs and displays another device entry');
+  count=snapshotCount();f.pause=true;f.release=null;focus();visible();focus();
+  await waitFor(()=>f.release,'paused active-return sync');visible();focus();f.pause=false;f.release();await settled();
+  check(snapshotCount()===count+1 && f.maxActive===1,'M: paired/repeated focus and visibility events share one scheduled/in-flight cycle');
+  a.online=false;win.dispatchEvent(new win.Event('offline'));const offlineCalls=f.calls.length;focus();visible();await delay(30);
+  check(f.calls.length===offlineCalls && state(frame).events.length===2,'M: offline activation makes no cloud calls and keeps the local diary');
+  a.emit('SIGNED_OUT',null);a.online=true;const signedOutCalls=f.calls.length;focus();visible();await delay(30);
+  check(f.calls.length===signedOutCalls && state(frame).events.length===2,'M: signed-out activation makes no cloud calls and keeps the local diary');
+  f.householdId='00000000-0000-4000-8000-000000000002';a.emit('SIGNED_IN',{id:'fixture-user'});await settled();count=snapshotCount();
+  focus();visible();await settled();
+  check(snapshotCount()===count && state(frame).householdId===household && frame.contentDocument.getElementById('sync-status').textContent.includes('mismatch'),'M: activation on household mismatch never pulls, writes or rebinds');
+  check(a.creates===1,'M: active-return triggers reuse the sole existing Auth client');
   frame.remove();
 }
