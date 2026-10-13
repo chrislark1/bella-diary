@@ -64,3 +64,16 @@ header .page-tabs{justify-self:auto}
 .menu-panel{max-height:calc(100dvh - 95px);overflow-y:auto}.cloud-account{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:10px}.cloud-account>strong{font-size:13px}.cloud-account p{margin:0;font-size:11px;line-height:1.4;overflow-wrap:anywhere}.cloud-account button:disabled{opacity:.6;cursor:default}
 
 #cloud-diagnostic{display:grid;gap:8px}#cloud-diagnostic[hidden]{display:none}#cloud-results{white-space:pre-line}
+
+/* Keep daily totals compact under their date without taking timeline width. */
+.date-label{line-height:1.1}
+.day-summary{display:flex;align-items:center;gap:7px;margin-top:2px;color:var(--muted);font-size:8px;font-weight:400;line-height:1;font-variant-numeric:tabular-nums}
+.day-count{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
+.day-summary .symbol{width:6.4px;height:6.4px}.day-summary .meal{width:8px;height:7.2px}
+@media(max-width:640px){.day-summary{gap:4px;margin-top:1px}}
+
+/* Keep the timing window beside its heading and remove explanatory clutter on phones. */
+.section-title-controls{display:flex;align-items:center;gap:10px;min-width:0}
+.aggregate-controls{justify-content:flex-start;gap:6px}
+.aggregate-count{white-space:nowrap}
+@media(max-width:640px){.section-heading{align-items:center}.section-title-controls{gap:8px}.aggregate-controls label,.aggregate-count,.bucket-help{display:none}}

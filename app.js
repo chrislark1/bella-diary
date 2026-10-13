@@ -254,10 +254,14 @@ function renderAggregate(events) {
 function renderTimeline(events, allEvents) {
   const dates = [...new Set(allEvents.map(dateOf))].sort().reverse();
   const groups = new Map(dates.map(date => [date,[]]));
+  const totals = new Map(dates.map(date => [date,Object.fromEntries(TYPES.map(type => [type,0]))]));
+  allEvents.forEach(event => totals.get(dateOf(event))[event.type]++);
   events.forEach(event => groups.get(dateOf(event)).push(event));
   $('timeline').innerHTML = axisHTML() + (dates.length ? dates.map(date => {
     const dayEvents = groups.get(date);
-    return `<div class="time-row ${date === localDate(new Date()) ? 'today' : ''}"><div class="date-label">${shortDate(date)}</div><div class="plot">${dayEvents.slice().reverse().map(event => markHTML(event)).join('')}</div></div>`;
+    const dayCounts = totals.get(date);
+    const summaryLabel = `${dayCounts.wee} ${dayCounts.wee === 1 ? 'wee' : 'wees'}, ${dayCounts.poo} ${dayCounts.poo === 1 ? 'poo' : 'poos'}, ${dayCounts.meal} ${dayCounts.meal === 1 ? 'meal' : 'meals'}`;
+    return `<div class="time-row ${date === localDate(new Date()) ? 'today' : ''}"><div class="date-label"><span class="day-date">${shortDate(date)}</span><span class="day-summary" role="img" aria-label="${summaryLabel}">${TYPES.map(type => `<span class="day-count"><span class="symbol ${type}" aria-hidden="true"></span><span aria-hidden="true">${dayCounts[type]}</span></span>`).join('')}</span></div><div class="plot">${dayEvents.slice().reverse().map(event => markHTML(event)).join('')}</div></div>`;
   }).join('') : '<p class="empty">A fresh start for Bella. Tap + Wee, + Poo or + Meal to begin.</p>');
   if (dates.length && !events.length) $('timeline').insertAdjacentHTML('beforeend','<p class="empty">No events match this filter.</p>');
 }

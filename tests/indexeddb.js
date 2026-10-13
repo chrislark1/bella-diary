@@ -199,8 +199,22 @@ async function run() {
   check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,note\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
   check(!csv.includes('m-poo') && csv.includes('z-wee'),'C: CSV excludes tombstones while keeping active events');
   await importBackup(frame,json);await reload(frame);check(same(state(frame),exportState),'C: actual JSON export restores losslessly');
-  await importBackup(frame,imported);
+  await importBackup(frame,{version:2,demoCleared:imported.demoCleared,events:imported.events});
   await click(frame,'[data-filter="wee"]'); check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===1,'C: timeline filter still works');
+  const dayTotals=()=>Array.from(frame.contentDocument.querySelectorAll('#timeline .day-summary')).map(group=>Array.from(group.querySelectorAll('.day-count')).map(cell=>cell.textContent.trim()));
+  check(same(dayTotals(),[['0','1','1'],['1','0','0']]),'C: daily icon totals include all active types independently of the diary filter');
+  const dayRows=Array.from(frame.contentDocument.querySelectorAll('#timeline .time-row'));
+  check(dayRows.every(row=>row.querySelector('.date-label .day-summary') && !row.querySelector(':scope > .day-totals')),'C: daily totals sit beneath their date labels with no separate right-hand area');
+  check(dayRows[0].querySelector('.day-summary').getAttribute('aria-label')==='0 wees, 1 poo, 1 meal','C: daily summary exposes labelled counts to assistive technology');
+  frame.style.width='900px'; await new Promise(resolve=>setTimeout(resolve,20));
+  const plot=frame.contentDocument.querySelector('#timeline .time-row .plot').getBoundingClientRect(),bucket=frame.contentDocument.querySelector('#aggregate .bucket-strip').getBoundingClientRect(),axis=frame.contentDocument.querySelector('#aggregate .axis').getBoundingClientRect(),timelineAxis=frame.contentDocument.querySelector('#timeline .axis').getBoundingClientRect(),grid=getComputedStyle(frame.contentDocument.querySelector('#timeline .time-row')).gridTemplateColumns.split(' ').length;
+  check(frame.contentWindow.getComputedStyle(dayRows[0].querySelector('.day-summary')).display!=='none' && grid===2 && Math.abs(plot.left-bucket.left)<1 && Math.abs(plot.right-bucket.right)<1 && Math.abs(axis.left-plot.left)<1 && Math.abs(axis.right-plot.right)<1 && Math.abs(timelineAxis.right-plot.right)<1,'C: desktop totals stay visible while the timeline reclaims the reserved column and keeps its axes aligned');
+  frame.style.width='390px'; await new Promise(resolve=>setTimeout(resolve,20));
+  const phoneLabel=dayRows[0].querySelector('.date-label').getBoundingClientRect(),phoneSummary=dayRows[0].querySelector('.day-summary').getBoundingClientRect();
+  check(frame.contentWindow.getComputedStyle(dayRows[0].querySelector('.day-summary')).display!=='none' && frame.contentWindow.getComputedStyle(dayRows[0].querySelector('.day-date')).display!=='none' && phoneLabel.width<=80 && phoneSummary.right<=phoneLabel.right+1,'C: phone layouts keep compact daily totals under visible dates within the existing date column');
+  check(frame.contentDocument.querySelector('.section-title-controls h2').textContent==='Timing Summary' && frame.contentDocument.querySelector('.section-title-controls #aggregate-window') && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('.aggregate-controls label')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate-count')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('.bucket-help')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate-window')).display!=='none','C: phone timing summary keeps only the window dropdown beside its title');
+  frame.style.width='';
+
   await click(frame,'#data-tab'); check(!frame.contentDocument.getElementById('data').hidden && frame.contentDocument.querySelectorAll('#data tbody tr').length===1,'C: Data shares filter and event store');
   await click(frame,'#stats-page-tab'); check(!frame.contentDocument.getElementById('stats-page').hidden,'C: Stats still switches independently');
   await click(frame,'#diary-page-tab'); check(frame.contentDocument.querySelector('[data-filter="wee"]').getAttribute('aria-pressed')==='true' && !frame.contentDocument.getElementById('data').hidden,'C: returning to Diary preserves view and filter');
@@ -244,9 +258,9 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v15');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v15'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v15 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v21');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v21'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v21 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -267,6 +281,7 @@ async function run() {
   await waitFor(()=>state(peerDelete).events.find(e=>e.id==='m-poo')?.deletedAt!=null,'peer tombstone refresh');
   await reload(peerDelete);check(same(state(peerDelete),state(frame)) && !peerDelete.contentDocument.querySelector('#timeline [data-id="m-poo"]'),'F: peer refresh/reload retains tombstone without resurrection');peerDelete.remove();
   check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===2 && frame.contentDocument.querySelectorAll('#data tbody tr').length===2 && frame.contentDocument.querySelector('#summary .metric strong').textContent==='2','F: deleted accident excluded from table, timeline and tracked-day counts');
+  check(same(dayTotals(),[['0','0','1'],['1','0','0']]),'F: daily totals exclude tombstoned events and retain zero counts');
   const activeStats=frame.contentWindow.eval('statistics(activeEvents())');
   check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
   await authChecks(frame);
