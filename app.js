@@ -94,7 +94,7 @@ function validateEvents(input) {
 
 let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
-let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', editingId = null, messageTimer;
+let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', timingMetricFilter = 'all', timingView = 'over-time', editingId = null, messageTimer;
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
 
@@ -227,8 +227,9 @@ function details(event) {
   return [accident(event) ? 'Inside accident' : 'Outside', event.pooConsistency].filter(Boolean).join(' · ');
 }
 
-function axisHTML() {
-  return '<div class="axis-row"><span></span><div class="axis">' + [0,4,8,12,16,20,24].map(hour => `<span style="left:${hour/24*100}%">${pad(hour)}</span>`).join('') + '</div></div>';
+function axisHTML(now = null) {
+  const label = now ? (() => {const minute=now.getHours()*60+now.getMinutes(), nearest=Math.round(minute/240)*240;return `<span class="now-axis-label${Math.abs(minute-nearest)<60?' near-tick':''}" data-now-axis-label style="left:${minute/1440*100}%">Now</span>`;})() : '';
+  return '<div class="axis-row"><span></span><div class="axis">' + [0,4,8,12,16,20,24].map(hour => `<span style="left:${hour/24*100}%">${pad(hour)}</span>`).join('') + label + '</div></div>';
 }
 
 function markHTML(event) {
@@ -277,37 +278,77 @@ function renderAggregate(events) {
   }).join('')}</div></div>`).join('');
 }
 
-function renderTimeline(events, allEvents) {
+function currentTimePercent(now = new Date()) {return (now.getHours()*60+now.getMinutes())/1440*100;}
+
+function updateNowMarker(now = new Date()) {
+  const percent=currentTimePercent(now), minute=now.getHours()*60+now.getMinutes(), nearest=Math.round(minute/240)*240;
+  document.querySelectorAll('#timeline .timeline-now').forEach(line => {line.style.left=`${percent}%`;});
+  const label=$('#timeline [data-now-axis-label]');
+  if (label) {label.style.left=`${percent}%`;label.classList.toggle('near-tick',Math.abs(minute-nearest)<60);}
+  $('timeline').setAttribute('aria-label',`Diary timeline. Current time ${localTime(now)}.`);
+}
+
+function renderTimeline(events, allEvents, now = new Date()) {
   const dates = [...new Set(allEvents.map(dateOf))].sort().reverse();
   const groups = new Map(dates.map(date => [date,[]]));
   const totals = new Map(dates.map(date => [date,Object.fromEntries(TYPES.map(type => [type,0]))]));
   allEvents.forEach(event => totals.get(dateOf(event))[event.type]++);
   events.forEach(event => groups.get(dateOf(event)).push(event));
-  $('timeline').innerHTML = axisHTML() + (dates.length ? dates.map(date => {
+  $('timeline').innerHTML = axisHTML(now) + (dates.length ? dates.map(date => {
     const dayEvents = groups.get(date);
     const dayCounts = totals.get(date);
     const summaryLabel = `${dayCounts.wee} ${dayCounts.wee === 1 ? 'wee' : 'wees'}, ${dayCounts.poo} ${dayCounts.poo === 1 ? 'poo' : 'poos'}, ${dayCounts.meal} ${dayCounts.meal === 1 ? 'meal' : 'meals'}`;
-    return `<div class="time-row ${date === localDate(new Date()) ? 'today' : ''}"><div class="date-label"><span class="day-date">${shortDate(date)}</span><span class="day-summary" role="img" aria-label="${summaryLabel}">${TYPES.map(type => `<span class="day-count"><span class="symbol ${type}" aria-hidden="true"></span><span aria-hidden="true">${dayCounts[type]}</span></span>`).join('')}</span></div><div class="plot">${dayEvents.slice().reverse().map(event => markHTML(event)).join('')}</div></div>`;
+    return `<div class="time-row ${date === localDate(now) ? 'today' : ''}"><div class="date-label"><span class="day-date">${shortDate(date)}</span><span class="day-summary" role="img" aria-label="${summaryLabel}">${TYPES.map(type => `<span class="day-count"><span class="symbol ${type}" aria-hidden="true"></span><span aria-hidden="true">${dayCounts[type]}</span></span>`).join('')}</span></div><div class="plot"><span class="timeline-now" style="left:${currentTimePercent(now)}%" aria-hidden="true"></span>${dayEvents.slice().reverse().map(event => markHTML(event)).join('')}</div></div>`;
   }).join('') : '<p class="empty">A fresh start for Bella. Tap + Wee, + Poo or + Meal to begin.</p>');
   if (dates.length && !events.length) $('timeline').insertAdjacentHTML('beforeend','<p class="empty">No events match this filter.</p>');
+  updateNowMarker(now);
 }
 
 function renderTable(events) {
   $('data').innerHTML = events.length ? `<table><thead><tr><th>Date / time</th><th>Type</th><th>Details</th><th class="note-column">Note</th><th><span class="muted">Edit</span></th></tr></thead><tbody>${events.map(event => `<tr data-id="${escapeHTML(event.id)}"><td>${shortDate(dateOf(event))}<br>${event.datetime.slice(11,16)}</td><td><span class="symbol ${event.type}" aria-hidden="true"></span>${titleCase(event.type)}</td><td>${escapeHTML(details(event))}${accident(event) ? ' <span class="accident-example" aria-label="Inside accident">!</span>' : ''}<span class="table-note-inline">${escapeHTML(event.note)}</span></td><td class="note-column">${escapeHTML(event.note)}</td><td><button data-id="${escapeHTML(event.id)}" aria-label="Edit ${event.type} on ${escapeHTML(shortDate(dateOf(event)))} at ${event.datetime.slice(11,16)}">Edit</button></td></tr>`).join('')}</tbody></table>` : '<p class="empty">No events to show. Try another filter or add an entry.</p>';
 }
 
+function timingObservations(events) {
+  const sorted = events.filter(event => isActiveEvent(event) && event.demo !== true).slice().sort((a,b) => a.datetime.localeCompare(b.datetime));
+  const observations = {wee:[],poo:[],'meal-poo':[]};
+  for (const [type,metric] of [['wee','wee'],['poo','poo']]) {
+    const series=sorted.filter(event=>event.type===type);
+    for (let i=1;i<series.length;i++) {
+      const startEvent=series[i-1], endEvent=series[i], minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
+      if (minutes>0 && minutes<=24*60) observations[metric].push({metric,startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
+    }
+  }
+  const poos=sorted.filter(event=>event.type==='poo');
+  for (const startEvent of sorted.filter(event=>event.type==='meal')) {
+    const endEvent=poos.find(event=>new Date(event.datetime)>new Date(startEvent.datetime));
+    if (!endEvent) continue;
+    const minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
+    if (minutes>0 && minutes<=12*60) observations['meal-poo'].push({metric:'meal-poo',startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
+  }
+  for (const series of Object.values(observations)) series.sort((a,b)=>a.completedAt-b.completedAt);
+  return observations;
+}
+
+function trailingMedianObservations(series) {
+  let first=0;
+  return series.map((item,index)=>{
+    const cutoff=item.completedAt-72*3600000;
+    while(first<index&&series[first].completedAt<cutoff)first++;
+    return {item,median:median(series.slice(first,index+1).map(candidate=>candidate.minutes))};
+  });
+}
+
+function percentileRank(index,count) {return count===1?50:index/(count-1)*100;}
+
 function statistics(events) {
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
   const dates = [...new Set(events.map(dateOf))];
+  const observations=timingObservations(events);
   const wees = sorted.filter(event => event.type === 'wee');
-  const poos = sorted.filter(event => event.type === 'poo');
-  const intervals = [], pooIntervals = [], daytime = [], overnight = [];
-  for (const [series,results] of [[wees,intervals],[poos,pooIntervals]]) for (let i = 1; i < series.length; i++) {
-    const a = series[i-1], b = series[i];
-    const elapsed = (new Date(b.datetime)-new Date(a.datetime))/60000;
-    if (elapsed <= 0 || elapsed > 24*60) continue; // Missing days are not useful intervals.
-    results.push(elapsed);
-    if (series !== wees) continue;
+  const daytime = [], overnight = [];
+  for (let i=0;i<wees.length-1;i++) {
+    const a=wees[i], b=wees[i+1], elapsed=(new Date(b.datetime)-new Date(a.datetime))/60000;
+    if (elapsed<=0 || elapsed>24*60) continue;
     if (dateOf(a) === dateOf(b) && minutesOf(a) >= DAY_START && minutesOf(b) <= DAY_END) daytime.push(elapsed);
     if (previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START) overnight.push(elapsed);
   }
@@ -323,7 +364,7 @@ function statistics(events) {
     return next ? (new Date(next.datetime)-new Date(meal.datetime))/60000 : null;
   }).filter(value => value !== null && value > 0 && value <= maxHours*60);
   const frequency = type => dates.length >= MIN_SAMPLES ? (events.filter(event => type === 'accidents' ? accident(event) : event.type === type).length/dates.length).toFixed(1) : '—';
-  return {frequency, interval:median(intervals), pooInterval:median(pooIntervals), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(afterMeal('poo',12))};
+  return {frequency, interval:median(observations.wee.map(item=>item.minutes)), pooInterval:median(observations.poo.map(item=>item.minutes)), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(observations['meal-poo'].map(item=>item.minutes))};
 }
 
 function renderStats(events) {
@@ -336,11 +377,81 @@ function renderStats(events) {
   $('stats').innerHTML = groups.map(([heading,rows]) => `<div><h3>${heading}</h3>${rows.map(([label,value]) => `<div class="stat-line"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`).join('');
 }
 
+const CHART_SERIES = {
+  wee:{label:'Wee gap',eventType:'wee',symbol:'circle'},
+  poo:{label:'Poo gap',eventType:'poo',symbol:'diamond'},
+  'meal-poo':{label:'Meal → poo',eventType:'meal',symbol:'triangle'}
+};
+
+function chartPointLabel(item) {
+  const date=shortDate(dateOf(item.endEvent)), time=item.endEvent.datetime.slice(11,16), elapsed=compactDuration(item.minutes);
+  if (item.metric==='meal-poo') return `Meal → poo\n${date}\nMeal ${item.startEvent.datetime.slice(11,16)}\nPoo ${time}\n${elapsed}`;
+  return `${CHART_SERIES[item.metric].label}\n${date} ${time}\n${elapsed}\nPrevious ${item.metric} ${item.startEvent.datetime.slice(11,16)}`;
+}
+
+function chartMarker(symbol,x,y,size=5) {
+  if (symbol==='diamond') return `<rect x="${x-size}" y="${y-size}" width="${size*2}" height="${size*2}" transform="rotate(45 ${x} ${y})"/>`;
+  if (symbol==='triangle') return `<path d="M ${x} ${y-size-1} L ${x+size+1} ${y+size} L ${x-size-1} ${y+size} Z"/>`;
+  return `<circle cx="${x}" cy="${y}" r="${size}"/>`;
+}
+
+function chartSeriesClass(metric) {return `chart-series-${metric.replaceAll(' ','-')}`;}
+
+function renderTimingChart(events) {
+  const all=timingObservations(events), enabled=timingMetricFilter==='all'?Object.keys(CHART_SERIES):[timingMetricFilter];
+  const series=enabled.map(metric=>({metric,items:all[metric]}));
+  const items=series.flatMap(row=>row.items);
+  document.querySelectorAll('[data-chart-filter]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.chartFilter===timingMetricFilter)));
+  document.querySelectorAll('[data-chart-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.chartView===timingView)));
+  const target=$('timing-chart-plot'), detail=$('timing-point-detail');
+  detail.textContent='Hover over, tap or focus a point to inspect its events.';
+  if (!items.length) {target.innerHTML='<p class="empty">Not enough data yet</p>';return;}
+
+  const W=Math.max(320,target.clientWidth||document.querySelector('main').clientWidth),H=430,left=W<600?54:76,right=W<600?12:22,top=24,bottom=58,plotW=W-left-right,plotH=H-top-bottom;
+  const maxMinutes=Math.max(...items.map(item=>item.minutes)), yMax=Math.max(30,maxMinutes*1.1);
+  const y=value=>top+plotH*(1-value/yMax);
+  const minTime=Math.min(...items.map(item=>item.completedAt)), maxTime=Math.max(...items.map(item=>item.completedAt)), sameTime=minTime===maxTime;
+  const xMin=timingView==='ordered'?0:(sameTime?minTime-12*3600000:minTime), xMax=timingView==='ordered'?100:(sameTime?maxTime+12*3600000:maxTime);
+  const x=value=>left+(value-xMin)/(xMax-xMin)*plotW;
+  const yTicks=[30,60,120,240,360,480,720,960,1200,1440].filter(value=>value<maxMinutes);
+  if (maxMinutes>0 && !yTicks.length) yTicks.push(Math.round(maxMinutes/2));
+  const grid=yTicks.map(value=>`<line class="chart-grid" x1="${left}" x2="${W-right}" y1="${y(value)}" y2="${y(value)}"/><text class="chart-axis-label y-axis-label" x="${left-10}" y="${y(value)+4}" text-anchor="end">${compactDuration(value)}</text>`).join('');
+  const tickFractions=W<600?[0,.5,1]:[0,.25,.5,.75,1];
+  const xTicks=timingView==='ordered'?tickFractions.map(fraction=>({value:fraction*100,label:`${Math.round(fraction*100)}%`})):
+    tickFractions.map(fraction=>{const value=xMin+(xMax-xMin)*fraction,date=new Date(value),label=date.toLocaleDateString('en-GB',{day:'numeric',month:'short'}),sameDay=new Date(minTime).toDateString()===new Date(maxTime).toDateString();return {value,label:sameDay?`${localTime(date)}`:label};});
+  const xAxis=xTicks.map(tick=>`<line class="chart-tick" x1="${x(tick.value)}" x2="${x(tick.value)}" y1="${top+plotH}" y2="${top+plotH+5}"/><text class="chart-axis-label" x="${x(tick.value)}" y="${top+plotH+21}" text-anchor="middle">${escapeHTML(tick.label)}</text>`).join('');
+  const axisTitle=timingView==='ordered'?'Position in each metric’s duration distribution':'Completed at';
+  const chartParts=[];
+  for (const row of series) {
+    const ordered=timingView==='ordered'?[...row.items].sort((a,b)=>a.minutes-b.minutes||a.completedAt-b.completedAt):row.items;
+    const positioned=ordered.map((item,index)=>({item,x:timingView==='ordered'?x(percentileRank(index,ordered.length)):x(item.completedAt),y:y(item.minutes)}));
+    const seriesClass=chartSeriesClass(row.metric);
+    if (timingView==='over-time') {
+      const medians=trailingMedianObservations(row.items).map((trend,index)=>({...positioned[index],median:trend.median}));
+      let segment=[];
+      const flush=()=>{if(segment.length>1)chartParts.push(`<path class="chart-trend ${seriesClass}" d="${segment.map((point,index)=>`${index?'L':'M'} ${point.x} ${y(point.median)}`).join(' ')}"/>`);segment=[];};
+      medians.forEach(point=>{if(point.median===null)flush();else {segment.push(point);chartParts.push(`<circle class="chart-trend-point ${seriesClass}" cx="${point.x}" cy="${y(point.median)}" r="2.5"/>`);}});flush();
+    } else if (ordered.length) {
+      const med=median(ordered.map(item=>item.minutes)), center=x(50);
+      if (positioned.length>1) chartParts.push(`<path class="chart-ordered ${seriesClass}" d="${positioned.map((point,index)=>`${index?'L':'M'} ${point.x} ${point.y}`).join(' ')}"/>`);
+      chartParts.push(`<g class="chart-reference ${seriesClass}" tabindex="0" role="img" aria-label="${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)} at the 50th percentile.`)}"><title>${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)}`)}</title>${chartMarker(CHART_SERIES[row.metric].symbol,center,y(med),6)}</g>`);
+    }
+    for (const point of positioned) {
+      const label=chartPointLabel(point.item), plain=label.replaceAll('\n','. '),symbol=CHART_SERIES[row.metric].symbol;
+      chartParts.push(`<g class="chart-point ${seriesClass}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHTML(plain)}" data-metric="${row.metric}" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title><circle class="chart-hit-area" r="10"/>${chartMarker(symbol,0,0,4)}</g>`);
+    }
+  }
+  const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>`;
+  const orderedIqrBand=timingView==='ordered'?`<rect class="chart-iqr-band" x="${x(25)}" y="${top}" width="${x(75)-x(25)}" height="${plotH}" aria-hidden="true"/>`:'';
+  target.innerHTML=`<svg class="timing-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="${timingView==='ordered'?'Ordered timing observations and distributions':'Timing observations over time'}"><g>${orderedIqrBand}${grid}${ticksY}${xAxis}<text class="chart-axis-title" x="${left+plotW/2}" y="${H-8}" text-anchor="middle">${axisTitle}</text>${chartParts.join('')}</g></svg>`;
+}
+
 function render() {
   const allEvents = activeEvents(), events = filteredEvents(allEvents);
   renderHeader(allEvents); renderAggregate(allEvents); renderTimeline(events,allEvents); renderTable(events); renderStats(allEvents);
   $('timeline').hidden = activeTab !== 'timeline'; $('data').hidden = activeTab !== 'data';
   $('diary-page').hidden = activePage !== 'diary'; $('stats-page').hidden = activePage !== 'stats';
+  if (activePage==='stats') renderTimingChart(allEvents);
   document.querySelectorAll('[data-page]').forEach(button => {const selected = button.dataset.page === activePage; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
   document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter)));
   document.querySelectorAll('[data-tab]').forEach(button => {const selected = button.dataset.tab === activeTab; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
@@ -424,6 +535,16 @@ function connectEvents() {
     try {localStorage.setItem(WINDOW_KEY,activeWindow);} catch {notify('Could not save the pattern window on this device.');}
     renderAggregate(activeEvents());
   });
+  $('timing-chart-controls').addEventListener('click',event=>{
+    const filter=event.target.closest('[data-chart-filter]'), view=event.target.closest('[data-chart-view]');
+    if (filter) timingMetricFilter=filter.dataset.chartFilter;
+    if (view) timingView=view.dataset.chartView;
+    if (filter||view) renderTimingChart(activeEvents());
+  });
+  $('timing-chart-plot').addEventListener('click',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('timing-point-detail').textContent=point.dataset.pointDetail;});
+  $('timing-chart-plot').addEventListener('focusin',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('timing-point-detail').textContent=point.dataset.pointDetail;});
+  $('timing-chart-plot').addEventListener('mouseover',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('timing-point-detail').textContent=point.dataset.pointDetail;});
+  $('timing-chart-plot').addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-point-detail]')){event.preventDefault();$('timing-point-detail').textContent=event.target.dataset.pointDetail;}});
   $('more-menu').addEventListener('click',event => {if (event.target.closest('button') && !event.target.closest('#cloud-account')) setTimeout(() => {$('more-menu').open = false;},0);});
   document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click',() => quickAdd(button.dataset.add,button.dataset.location || 'outside')));
   $('aggregate').addEventListener('click',event => {const bucket = event.target.closest('[data-bucket-label]'); if (bucket) notify(bucket.dataset.bucketLabel);});
@@ -450,7 +571,7 @@ function connectEvents() {
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
-  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render();} else renderHeader(activeEvents(),now);},60000);
+  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render();} else {renderHeader(activeEvents(),now);updateNowMarker(now);}},60000);
 }
 
 const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p>';

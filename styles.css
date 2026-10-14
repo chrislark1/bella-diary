@@ -78,3 +78,49 @@ header .page-tabs{justify-self:auto}
 .aggregate-controls{justify-content:flex-start;gap:6px}
 .aggregate-count{white-space:nowrap}
 @media(max-width:640px){.section-heading{align-items:center}.section-title-controls{gap:8px}.aggregate-controls label,.aggregate-count,.bucket-help{display:none}}
+
+/* A responsive native-SVG comparison of the diary's three timing series. */
+.timing-chart{border-top:1px solid var(--line);margin-top:22px;padding-top:18px}
+.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.chart-toolbar h3{margin:0}
+.chart-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.chart-controls .filters{gap:1px}
+.chart-controls button{min-height:32px;padding:4px 9px;font-size:11px;white-space:nowrap}
+.chart-filters button{border-color:transparent;background:transparent}
+.chart-filters button[aria-pressed=true]{background:var(--green);color:#fff}
+.chart-views button{min-height:30px}
+.chart-views button[aria-pressed=true]{background:#fffef9;box-shadow:0 1px 3px #233c3020}
+.chart-legend{display:flex;gap:15px;flex-wrap:wrap;margin:12px 0 5px;font-size:11px}
+.chart-legend span{display:inline-flex;align-items:center;gap:6px}
+.chart-legend .symbol{width:8px;height:8px}
+.chart-legend .poo{width:7px;height:7px}
+.chart-legend .meal{width:9px;height:8px}
+.chart-explanation{font-size:10px;margin:5px 0}
+.timing-svg{display:block;width:100%;height:auto;overflow:visible;touch-action:pan-y}
+.chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:2 4}
+.chart-axis,.chart-tick{stroke:#8a9388;stroke-width:1}
+.chart-axis-label{fill:var(--muted);font:12px system-ui,sans-serif}
+.chart-axis-title{fill:var(--muted);font:12px system-ui,sans-serif}
+.chart-point{cursor:pointer;outline:none;opacity:.7}
+.chart-point:hover,.chart-point:focus{opacity:1}
+.chart-point:focus .chart-hit-area{stroke:var(--green);stroke-width:1.5;stroke-opacity:.7}
+.chart-hit-area{fill:transparent;stroke:transparent}
+.chart-point.chart-series-wee,.chart-reference.chart-series-wee{fill:var(--gold)}
+.chart-point.chart-series-poo,.chart-reference.chart-series-poo{fill:var(--brown)}
+.chart-point.chart-series-meal-poo,.chart-reference.chart-series-meal-poo{fill:var(--meal)}
+.chart-trend,.chart-ordered{fill:none;stroke-width:1.6;opacity:.75;stroke-linejoin:round;stroke-linecap:round}
+.chart-trend.chart-series-wee,.chart-ordered.chart-series-wee{stroke:var(--gold)}
+.chart-trend.chart-series-poo,.chart-ordered.chart-series-poo{stroke:var(--brown)}
+.chart-trend.chart-series-meal-poo,.chart-ordered.chart-series-meal-poo{stroke:var(--meal)}
+.chart-ordered{stroke-width:1.3;opacity:.6;pointer-events:none}
+.chart-trend-point{opacity:.8}.chart-trend-point.chart-series-wee{fill:var(--gold)}.chart-trend-point.chart-series-poo{fill:var(--brown)}.chart-trend-point.chart-series-meal-poo{fill:var(--meal)}
+.chart-iqr-band{fill:#879187;opacity:.12;pointer-events:none}
+.chart-reference{outline:none}.chart-reference:focus{stroke:var(--green);stroke-width:2}
+.chart-point-detail{min-height:20px;margin:4px 0 0;font-size:11px;line-height:1.5;white-space:pre-line;color:var(--muted)}
+.numeric-stats-title{margin:22px 0 12px}
+.timeline-now{position:absolute;z-index:1;top:0;bottom:0;width:1.5px;background:#b65a3d;opacity:.8;pointer-events:none}
+.time-row .event-mark{z-index:2}
+.now-axis-label{z-index:2;top:-11px;padding:1px 4px;border-radius:4px;background:#b65a3d;color:white;font:9px system-ui,sans-serif;line-height:1.2;transform:translateX(-50%)!important;white-space:nowrap}
+.now-axis-label.near-tick{visibility:hidden}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:640px){.chart-toolbar{align-items:flex-start}.chart-controls{width:100%;justify-content:space-between;gap:4px}.chart-controls button{padding-inline:6px;font-size:10px}.chart-legend{gap:9px;font-size:10px}.chart-axis-label,.chart-axis-title{font-size:11px}.now-axis-label{display:none}}
