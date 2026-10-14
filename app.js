@@ -14,7 +14,7 @@ const localTime = date => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 const localDatetime = date => `${localDate(date)}T${localTime(date)}`;
 const dateOf = event => event.datetime.slice(0, 10);
 const minutesOf = event => Number(event.datetime.slice(11, 13)) * 60 + Number(event.datetime.slice(14, 16));
-// Daily marks and hourly buckets share the same 00–24 plotting geometry.
+// Daily marks and Timing Summary buckets share the same 00–24 plotting geometry.
 const position = event => minutesOf(event) / 1440 * 100;
 const accident = event => event.type !== 'meal' && event.location === 'inside';
 const titleCase = text => text[0].toUpperCase() + text.slice(1);
@@ -258,7 +258,8 @@ function renderHeader(events, now = new Date()) {
 }
 
 function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize) {
-  const buckets = Array.from({length:1440/binMinutes}, () => ({count:0, dates:new Set()}));
+  const bucketCount = Math.ceil(1440/binMinutes);
+  const buckets = Array.from({length:bucketCount}, () => ({count:0, dates:new Set()}));
   const matching = events.filter(event => event.type === type);
   matching.forEach(event => {const bucket = buckets[Math.floor(minutesOf(event)/binMinutes)]; bucket.count++; bucket.dates.add(dateOf(event));});
   const peak = Math.max(0,...buckets.map(bucket => bucket.count));
@@ -267,29 +268,29 @@ function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSiz
 
 function bucketTime(minute) {return `${pad(Math.floor(minute/60))}:${pad(minute%60)}`;}
 
-function renderAggregate(events) {
-  const today = localDate(new Date());
+function renderAggregate(events, now = new Date()) {
+  const today = localDate(now);
   const cutoff = activeWindow === 'all' ? null : (() => {const day = new Date(`${today}T12:00`); day.setDate(day.getDate() - Number(activeWindow) + 1); return localDate(day);})();
   const windowEvents = activeWindow === 'all' ? events : events.filter(event => dateOf(event) >= cutoff && dateOf(event) <= today);
   const trackedDays = new Set(windowEvents.map(dateOf)).size;
   const labels = {wee:'Wees',poo:'Poos',meal:'Meals'};
   const windowName = activeWindow === 'all' ? 'all time' : `the last ${activeWindow} days`;
   $('aggregate-count').textContent = `${trackedDays} ${trackedDays === 1 ? 'diary day' : 'diary days'} · ${windowEvents.length} events`;
-  $('aggregate').innerHTML = axisHTML() + TYPES.map(type => `<div class="time-row aggregate-row"><div class="date-label">${labels[type]}</div><div class="plot bucket-strip ${type}-buckets" style="--bucket-count:${1440/activeBinSize}">${bucketDistribution(windowEvents,type,trackedDays).map(({count,days,percent,strength,total,diaryDays},index) => {
+  const bucketCount = Math.ceil(1440/activeBinSize);
+  $('aggregate').innerHTML = axisHTML(now) + TYPES.map(type => `<div class="time-row aggregate-row"><div class="date-label">${labels[type]}</div><div class="plot bucket-strip ${type}-buckets" style="--bucket-count:${bucketCount}">${bucketDistribution(windowEvents,type,trackedDays).map(({count,days,percent,strength,total,diaryDays},index) => {
     const start=index*activeBinSize, end=start+activeBinSize;
     const interval=`${bucketTime(start)}–${bucketTime(end)}`;
     const label = `${labels[type]}, ${interval}, ${windowName}: ${total ? `${percent}% of recorded ${labels[type].toLowerCase()} (${count} of ${total}); seen on ${days} of ${diaryDays} diary days. Shading: ${Math.round(strength*100)}% of this row's busiest bucket` : `no recorded ${labels[type].toLowerCase()} ${windowName}`}`;
     return `<button class="hour-bucket" style="--strength:${strength}" data-bucket-label="${escapeHTML(label)}" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"></button>`;
-  }).join('')}</div></div>`).join('');
+  }).join('')}<span class="timeline-now aggregate-now" style="left:${currentTimePercent(now)}%" aria-hidden="true"></span></div></div>`).join('');
 }
 
 function currentTimePercent(now = new Date()) {return (now.getHours()*60+now.getMinutes())/1440*100;}
 
 function updateNowMarker(now = new Date()) {
   const percent=currentTimePercent(now), minute=now.getHours()*60+now.getMinutes(), nearest=Math.round(minute/240)*240;
-  document.querySelectorAll('#timeline .timeline-now').forEach(line => {line.style.left=`${percent}%`;});
-  const label=$('#timeline [data-now-axis-label]');
-  if (label) {label.style.left=`${percent}%`;label.classList.toggle('near-tick',Math.abs(minute-nearest)<60);}
+  document.querySelectorAll('#aggregate .aggregate-now, #timeline .timeline-now').forEach(line => {line.style.left=`${percent}%`;});
+  document.querySelectorAll('#aggregate [data-now-axis-label], #timeline [data-now-axis-label]').forEach(label => {label.style.left=`${percent}%`;label.classList.toggle('near-tick',Math.abs(minute-nearest)<60);});
   $('timeline').setAttribute('aria-label',`Diary timeline. Current time ${localTime(now)}.`);
 }
 
@@ -535,7 +536,7 @@ async function importJSON(file) {
 
 function connectEvents() {
   try {const savedWindow = localStorage.getItem(WINDOW_KEY); if (['7','14','30','all'].includes(savedWindow)) activeWindow = savedWindow;} catch {}
-  try {const savedBinSize = localStorage.getItem(BIN_SIZE_KEY); if (['60','30'].includes(savedBinSize)) activeBinSize = Number(savedBinSize);} catch {}
+  try {const savedBinSize = localStorage.getItem(BIN_SIZE_KEY); if (['30','60','90','120'].includes(savedBinSize)) activeBinSize = Number(savedBinSize);} catch {}
   $('aggregate-window').value = activeWindow;
   $('aggregate-bin-size').value = String(activeBinSize);
   $('aggregate-window').addEventListener('change',event => {
@@ -544,7 +545,7 @@ function connectEvents() {
     renderAggregate(activeEvents());
   });
   $('aggregate-bin-size').addEventListener('change',event => {
-    activeBinSize = ['60','30'].includes(event.target.value) ? Number(event.target.value) : 60;
+    activeBinSize = ['30','60','90','120'].includes(event.target.value) ? Number(event.target.value) : 60;
     event.target.value = String(activeBinSize);
     try {localStorage.setItem(BIN_SIZE_KEY,String(activeBinSize));} catch {notify('Could not save the bucket size on this device.');}
     renderAggregate(activeEvents());

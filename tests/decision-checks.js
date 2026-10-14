@@ -46,6 +46,9 @@ async function decisionSupportChecks() {
   check(win.eval(`currentTimePercent(new Date('2026-10-14T00:00'))===0&&currentTimePercent(new Date('2026-10-14T12:00'))===50&&Math.abs(currentTimePercent(new Date('2026-10-14T23:00'))-95.8333333333)<.001`),'P: Now marker uses the same 24-hour geometry at midnight, noon and late evening');
   win.eval(`renderTimeline(${JSON.stringify(crossDay)},${JSON.stringify(crossDay)},new Date('2026-10-14T12:00'));`);
   check(frame.contentDocument.querySelectorAll('#timeline .timeline-now').length===2&&[...frame.contentDocument.querySelectorAll('#timeline .timeline-now')].every(line=>line.parentElement.classList.contains('plot'))&&frame.contentDocument.getElementById('timeline').getAttribute('aria-label').includes('12:00'),'P: Now segments align in every visible plot only, with one accessible current-time label');
+  win.eval(`renderAggregate(${JSON.stringify(crossDay)},new Date('2026-10-14T12:00'));`);
+  const aggregateNow=[...frame.contentDocument.querySelectorAll('#aggregate .aggregate-now')],aggregateAxisNow=frame.contentDocument.querySelector('#aggregate [data-now-axis-label]');
+  check(aggregateNow.length===3&&aggregateNow.every(line=>line.parentElement.classList.contains('bucket-strip')&&line.style.left==='50%')&&aggregateAxisNow?.style.left==='50%'&&aggregateNow.every(line=>!line.parentElement.parentElement.querySelector('.date-label').contains(line)),'P: Timing Summary Now markers align with the Diary axis and stay inside all three plotting rows');
   win.eval(`store.events=${JSON.stringify([...fixture,tombstone])};renderHeader(activeEvents(),new Date('2026-10-14T12:15:00'));`);
   const header=frame.contentDocument.getElementById('summary'), decision=header.querySelectorAll('.metric');
   check(decision.length===5 && !header.textContent.includes("Today's wees") && !header.textContent.includes("Today's poos") && !header.textContent.includes("Today's meals") && decision[1].querySelector('strong').textContent==='15m','P: header has the five requested metrics, uses latest active wee and ignores tombstones');
@@ -59,8 +62,9 @@ async function decisionSupportChecks() {
   const before=await databaseContents(), beforeWrites=win.__saveEvents;
   const initialNow=frame.contentDocument.querySelector('#timeline .timeline-now')?.style.left;
   win.__testNow=Date.parse('2026-10-14T12:00:00');win.__minuteTick();
-  check(frame.contentDocument.querySelectorAll('#summary .metric')[1].querySelector('strong').textContent==='1h 00m'&&frame.contentDocument.querySelector('#timeline .timeline-now')?.style.left==='50%','P: existing minute timer refreshes elapsed metrics and moves the Now line');
+  check(frame.contentDocument.querySelectorAll('#summary .metric')[1].querySelector('strong').textContent==='1h 00m'&&frame.contentDocument.querySelector('#timeline .timeline-now')?.style.left==='50%'&&[...frame.contentDocument.querySelectorAll('#aggregate .aggregate-now')].every(line=>line.style.left==='50%'),'P: existing minute timer refreshes elapsed metrics and moves both Now markers');
   win.__testNow=Date.parse('2026-10-14T13:00:00');win.__minuteTick();
-  check(initialNow!=='50%'&&frame.contentDocument.querySelector('#timeline .timeline-now')?.style.left.startsWith('54.16')&&frame.contentDocument.querySelectorAll('#timeline .timeline-now').length===1&&frame.contentDocument.querySelectorAll('#summary .metric')[1].querySelector('strong').textContent==='2h 00m'&&same(await databaseContents(),before)&&win.__saveEvents===beforeWrites,'P: minute refresh moves the marker across rows and updates UI only, without storage writes or sync triggers');
+  const timedMarkers=[...frame.contentDocument.querySelectorAll('#aggregate .aggregate-now, #timeline .timeline-now')];
+  check(initialNow!=='50%'&&frame.contentDocument.querySelector('#timeline .timeline-now')?.style.left.startsWith('54.16')&&timedMarkers.length===4&&timedMarkers.every(line=>line.style.left.startsWith('54.16'))&&frame.contentDocument.querySelectorAll('#summary .metric')[1].querySelector('strong').textContent==='2h 00m'&&same(await databaseContents(),before)&&win.__saveEvents===beforeWrites,'P: minute refresh moves both markers across rows and updates UI only, without storage writes or sync triggers');
   frame.remove();
 }
