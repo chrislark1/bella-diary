@@ -2,6 +2,7 @@
 
 // One store, one filter, one editor. Datetimes are local wall-clock ISO strings.
 const WINDOW_KEY = 'bellaDiary.aggregateWindow';
+const BIN_SIZE_KEY = 'bellaDiary.aggregateBinSize';
 const TYPES = ['wee', 'poo', 'meal'];
 const CONSISTENCIES = ['Firm', 'Normal', 'Soft', 'Diarrhoea'];
 const MIN_SAMPLES = 3;
@@ -94,7 +95,7 @@ function validateEvents(input) {
 
 let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
-let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', timingMetricFilter = 'all', timingView = 'over-time', editingId = null, messageTimer;
+let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, timingMetricFilter = 'all', timingView = 'over-time', editingId = null, messageTimer;
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
 
@@ -256,13 +257,15 @@ function renderHeader(events, now = new Date()) {
   $('summary').innerHTML = metrics.map((metric,index) => `<div class="metric${index>0&&index<4?' decision-metric':''}" aria-label="${escapeHTML(metric.aria)}"><strong>${metric.value}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
 }
 
-function hourlyDistribution(events, type, trackedDays) {
-  const buckets = Array.from({length:24}, () => ({count:0, dates:new Set()}));
+function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize) {
+  const buckets = Array.from({length:1440/binMinutes}, () => ({count:0, dates:new Set()}));
   const matching = events.filter(event => event.type === type);
-  matching.forEach(event => {const bucket = buckets[Math.floor(minutesOf(event)/60)]; bucket.count++; bucket.dates.add(dateOf(event));});
+  matching.forEach(event => {const bucket = buckets[Math.floor(minutesOf(event)/binMinutes)]; bucket.count++; bucket.dates.add(dateOf(event));});
   const peak = Math.max(0,...buckets.map(bucket => bucket.count));
   return buckets.map(bucket => ({count:bucket.count, days:bucket.dates.size, percent:matching.length ? Math.round(bucket.count/matching.length*100) : 0, strength:peak ? bucket.count/peak : 0, total:matching.length, diaryDays:trackedDays}));
 }
+
+function bucketTime(minute) {return `${pad(Math.floor(minute/60))}:${pad(minute%60)}`;}
 
 function renderAggregate(events) {
   const today = localDate(new Date());
@@ -272,8 +275,10 @@ function renderAggregate(events) {
   const labels = {wee:'Wees',poo:'Poos',meal:'Meals'};
   const windowName = activeWindow === 'all' ? 'all time' : `the last ${activeWindow} days`;
   $('aggregate-count').textContent = `${trackedDays} ${trackedDays === 1 ? 'diary day' : 'diary days'} · ${windowEvents.length} events`;
-  $('aggregate').innerHTML = axisHTML() + TYPES.map(type => `<div class="time-row aggregate-row"><div class="date-label">${labels[type]}</div><div class="plot bucket-strip ${type}-buckets">${hourlyDistribution(windowEvents,type,trackedDays).map(({count,days,percent,strength,total,diaryDays},hour) => {
-    const label = `${labels[type]}, ${pad(hour)}:00–${pad(hour+1)}:00, ${windowName}: ${total ? `${percent}% of recorded ${labels[type].toLowerCase()} (${count} of ${total}); seen on ${days} of ${diaryDays} diary days. Shading: ${Math.round(strength*100)}% of this row's busiest hour` : `no recorded ${labels[type].toLowerCase()} ${windowName}`}`;
+  $('aggregate').innerHTML = axisHTML() + TYPES.map(type => `<div class="time-row aggregate-row"><div class="date-label">${labels[type]}</div><div class="plot bucket-strip ${type}-buckets" style="--bucket-count:${1440/activeBinSize}">${bucketDistribution(windowEvents,type,trackedDays).map(({count,days,percent,strength,total,diaryDays},index) => {
+    const start=index*activeBinSize, end=start+activeBinSize;
+    const interval=`${bucketTime(start)}–${bucketTime(end)}`;
+    const label = `${labels[type]}, ${interval}, ${windowName}: ${total ? `${percent}% of recorded ${labels[type].toLowerCase()} (${count} of ${total}); seen on ${days} of ${diaryDays} diary days. Shading: ${Math.round(strength*100)}% of this row's busiest bucket` : `no recorded ${labels[type].toLowerCase()} ${windowName}`}`;
     return `<button class="hour-bucket" style="--strength:${strength}" data-bucket-label="${escapeHTML(label)}" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"></button>`;
   }).join('')}</div></div>`).join('');
 }
@@ -434,7 +439,7 @@ function renderTimingChart(events) {
     } else if (ordered.length) {
       const med=median(ordered.map(item=>item.minutes)), center=x(50);
       if (positioned.length>1) chartParts.push(`<path class="chart-ordered ${seriesClass}" d="${positioned.map((point,index)=>`${index?'L':'M'} ${point.x} ${point.y}`).join(' ')}"/>`);
-      chartParts.push(`<g class="chart-reference ${seriesClass}" tabindex="0" role="img" aria-label="${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)} at the 50th percentile.`)}"><title>${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)}`)}</title>${chartMarker(CHART_SERIES[row.metric].symbol,center,y(med),6)}</g>`);
+      if (ordered.length>=MIN_SAMPLES) chartParts.push(`<g class="chart-reference ${seriesClass}" tabindex="0" role="img" aria-label="${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)} at the 50th percentile.`)}"><title>${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)}`)}</title>${chartMarker(CHART_SERIES[row.metric].symbol,center,y(med),6)}</g>`);
     }
     for (const point of positioned) {
       const label=chartPointLabel(point.item), plain=label.replaceAll('\n','. '),symbol=CHART_SERIES[row.metric].symbol;
@@ -442,7 +447,8 @@ function renderTimingChart(events) {
     }
   }
   const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>`;
-  const orderedIqrBand=timingView==='ordered'?`<rect class="chart-iqr-band" x="${x(25)}" y="${top}" width="${x(75)-x(25)}" height="${plotH}" aria-hidden="true"/>`:'';
+  const hasQualifiedDistribution=series.some(row=>row.items.length>=MIN_SAMPLES);
+  const orderedIqrBand=timingView==='ordered'&&hasQualifiedDistribution?`<rect class="chart-iqr-band" x="${x(25)}" y="${top}" width="${x(75)-x(25)}" height="${plotH}" aria-hidden="true"/>`:'';
   target.innerHTML=`<svg class="timing-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="${timingView==='ordered'?'Ordered timing observations and distributions':'Timing observations over time'}"><g>${orderedIqrBand}${grid}${ticksY}${xAxis}<text class="chart-axis-title" x="${left+plotW/2}" y="${H-8}" text-anchor="middle">${axisTitle}</text>${chartParts.join('')}</g></svg>`;
 }
 
@@ -529,10 +535,18 @@ async function importJSON(file) {
 
 function connectEvents() {
   try {const savedWindow = localStorage.getItem(WINDOW_KEY); if (['7','14','30','all'].includes(savedWindow)) activeWindow = savedWindow;} catch {}
+  try {const savedBinSize = localStorage.getItem(BIN_SIZE_KEY); if (['60','30'].includes(savedBinSize)) activeBinSize = Number(savedBinSize);} catch {}
   $('aggregate-window').value = activeWindow;
+  $('aggregate-bin-size').value = String(activeBinSize);
   $('aggregate-window').addEventListener('change',event => {
     activeWindow = event.target.value;
     try {localStorage.setItem(WINDOW_KEY,activeWindow);} catch {notify('Could not save the pattern window on this device.');}
+    renderAggregate(activeEvents());
+  });
+  $('aggregate-bin-size').addEventListener('change',event => {
+    activeBinSize = ['60','30'].includes(event.target.value) ? Number(event.target.value) : 60;
+    event.target.value = String(activeBinSize);
+    try {localStorage.setItem(BIN_SIZE_KEY,String(activeBinSize));} catch {notify('Could not save the bucket size on this device.');}
     renderAggregate(activeEvents());
   });
   $('timing-chart-controls').addEventListener('click',event=>{

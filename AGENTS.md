@@ -79,12 +79,48 @@ README and AGENTS changes alone do not require a cache bump.
 
 ## Verification
 
-Use the existing dependency-free browser suite at
-`http://127.0.0.1:8137/tests/indexeddb.html`, served with
-`python -m http.server 8137 --bind 127.0.0.1`. It uses real IndexedDB and resets
-only that disposable origin; never run destructive tests against the real diary.
-After online checks pass, stop the server and run the offline checks from the
-already open test page. The current suite has 238 checks, including SDK-stub
-Auth, diagnostic and sync coverage. Check JavaScript syntax and `git diff --check`
-for code changes. Live Google/RLS, two-device sync and iPad Home Screen behavior
-require manual verification as documented in README.
+Use verification proportionate to the change.
+
+For small, low-risk changes such as:
+- CSS/layout adjustments
+- wording changes
+- simple rendering changes
+- isolated statistics/chart presentation changes
+
+run the relevant focused checks plus:
+- JavaScript syntax checks when JavaScript changed
+- `git diff --check`
+
+Do not run the full browser/offline suite by default for these changes.
+
+Run the full dependency-free browser suite at
+`http://127.0.0.1:8137/tests/indexeddb.html` when changes affect, or could
+reasonably affect:
+
+- IndexedDB persistence or migrations
+- event create/edit/delete behaviour
+- imports/exports
+- authentication
+- household binding
+- cloud diagnostics
+- synchronization/conflict handling
+- service-worker/offline behaviour
+- shared application lifecycle or startup logic
+
+Serve it with:
+
+`python -m http.server 8137 --bind 127.0.0.1`
+
+The suite uses only the disposable test origin. Never run destructive tests
+against the real diary.
+
+Run the offline portion only when:
+- offline/storage/service-worker behaviour changed, or
+- explicitly requested as a broader regression/release check.
+
+Live Google/RLS, two-device sync and iPad Home Screen behaviour require manual
+verification only when the relevant functionality changes or when explicitly
+requested.
+
+Prefer existing focused tests over adding or running broad regression checks for
+minor UI changes.
