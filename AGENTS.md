@@ -84,7 +84,7 @@ Use the existing dependency-free browser suite at
 `python -m http.server 8137 --bind 127.0.0.1`. It uses real IndexedDB and resets
 only that disposable origin; never run destructive tests against the real diary.
 After online checks pass, stop the server and run the offline checks from the
-already open test page. The current suite has 223 checks, including SDK-stub
+already open test page. The current suite has 231 checks, including SDK-stub
 Auth, diagnostic and sync coverage. Check JavaScript syntax and `git diff --check`
 for code changes. Live Google/RLS, two-device sync and iPad Home Screen behavior
 require manual verification as documented in README.

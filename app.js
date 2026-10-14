@@ -32,6 +32,20 @@ const isActiveEvent = event => event.deletedAt === null;
 const activeEvents = () => store.events.filter(isActiveEvent);
 const median = values => {if (values.length < MIN_SAMPLES) return null; const a = [...values].sort((a,b) => a-b); const mid = Math.floor(a.length/2); return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;};
 const duration = value => value == null ? '—' : value < 60 ? `${Math.round(value)} min` : `${Math.floor(Math.round(value)/60)} h ${Math.round(value)%60} min`;
+const compactDuration = value => {
+  if (value == null) return '—';
+  const minutes = Math.max(0,Math.round(value));
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.floor(minutes/60)}h ${pad(minutes%60)}m`;
+  return `${Math.floor(minutes/1440)}d ${Math.floor(minutes%1440/60)}h`;
+};
+const spokenDuration = value => {
+  if (value == null) return 'not available';
+  const minutes = Math.max(0,Math.round(value)), days = Math.floor(minutes/1440), hours = Math.floor(minutes%1440/60), rest = minutes%60;
+  if (days) return `${days} day${days===1?'':'s'}${hours ? ` ${hours} hour${hours===1?'':'s'}` : ''}`;
+  if (hours) return `${hours} hour${hours===1?'':'s'}${rest ? ` ${rest} minute${rest===1?'':'s'}` : ''}`;
+  return `${rest} minute${rest===1?'':'s'}`;
+};
 const clockTime = value => value == null ? '—' : `${pad(Math.floor(Math.round(value)/60)%24)}:${pad(Math.round(value)%60)}`;
 
 // Reject invalid dates, duplicate IDs and irrelevant/unrecognised fields.
@@ -223,10 +237,22 @@ function markHTML(event) {
   return `<button class="event-mark" data-id="${escapeHTML(event.id)}" style="left:${position(event)}%" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}">${inner}</button>`;
 }
 
-function renderHeader(events) {
-  const today = events.filter(event => dateOf(event) === localDate(new Date()));
-  const metrics = [[new Set(events.map(dateOf)).size,'Days tracked'], ...TYPES.map(type => [today.filter(event => event.type === type).length, `Today's ${type === 'wee' ? 'wees' : type === 'poo' ? 'poos' : 'meals'}`]), [streak(events),'Days accident-free']];
-  $('summary').innerHTML = metrics.map(([value,label]) => `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`).join('');
+function renderHeader(events, now = new Date()) {
+  const stats = statistics(events);
+  const since = type => {
+    const latest = events.filter(event => event.type === type).reduce((found,event) => !found || Date.parse(event.datetime) > Date.parse(found.datetime) ? event : found,null);
+    if (!latest) return null;
+    const elapsed = (now.getTime()-new Date(latest.datetime).getTime())/60000;
+    return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
+  };
+  const metrics = [
+    {value:new Set(events.map(dateOf)).size,label:'Days tracked',aria:`${new Set(events.map(dateOf)).size} days tracked`},
+    {value:compactDuration(since('wee')),description:'Since last wee',median:`Median ${compactDuration(stats.interval)}`,aria:`Time since last wee: ${spokenDuration(since('wee'))}. Median wee interval: ${spokenDuration(stats.interval)}.`},
+    {value:compactDuration(since('meal')),description:'Since last meal',median:`Meal → poo median ${compactDuration(stats.mealPoo)}`,aria:`Time since last meal: ${spokenDuration(since('meal'))}. Median meal to poo: ${spokenDuration(stats.mealPoo)}.`},
+    {value:compactDuration(since('poo')),description:'Since last poo',median:`Median ${compactDuration(stats.pooInterval)}`,aria:`Time since last poo: ${spokenDuration(since('poo'))}. Median poo interval: ${spokenDuration(stats.pooInterval)}.`},
+    {value:streak(events),label:'Days accident-free',aria:`${streak(events)} days accident-free`}
+  ];
+  $('summary').innerHTML = metrics.map((metric,index) => `<div class="metric${index>0&&index<4?' decision-metric':''}" aria-label="${escapeHTML(metric.aria)}"><strong>${metric.value}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
 }
 
 function hourlyDistribution(events, type, trackedDays) {
@@ -274,12 +300,14 @@ function statistics(events) {
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
   const dates = [...new Set(events.map(dateOf))];
   const wees = sorted.filter(event => event.type === 'wee');
-  const intervals = [], daytime = [], overnight = [];
-  for (let i = 1; i < wees.length; i++) {
-    const a = wees[i-1], b = wees[i];
+  const poos = sorted.filter(event => event.type === 'poo');
+  const intervals = [], pooIntervals = [], daytime = [], overnight = [];
+  for (const [series,results] of [[wees,intervals],[poos,pooIntervals]]) for (let i = 1; i < series.length; i++) {
+    const a = series[i-1], b = series[i];
     const elapsed = (new Date(b.datetime)-new Date(a.datetime))/60000;
     if (elapsed <= 0 || elapsed > 24*60) continue; // Missing days are not useful intervals.
-    intervals.push(elapsed);
+    results.push(elapsed);
+    if (series !== wees) continue;
     if (dateOf(a) === dateOf(b) && minutesOf(a) >= DAY_START && minutesOf(b) <= DAY_END) daytime.push(elapsed);
     if (previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START) overnight.push(elapsed);
   }
@@ -295,14 +323,14 @@ function statistics(events) {
     return next ? (new Date(next.datetime)-new Date(meal.datetime))/60000 : null;
   }).filter(value => value !== null && value > 0 && value <= maxHours*60);
   const frequency = type => dates.length >= MIN_SAMPLES ? (events.filter(event => type === 'accidents' ? accident(event) : event.type === type).length/dates.length).toFixed(1) : '—';
-  return {frequency, interval:median(intervals), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(afterMeal('poo',12))};
+  return {frequency, interval:median(intervals), pooInterval:median(pooIntervals), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(afterMeal('poo',12))};
 }
 
 function renderStats(events) {
   const s = statistics(events);
   const groups = [
     ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accident-free streak',`${streak(events)} days`]]],
-    ['Timing', [['Median wee interval',duration(s.interval)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
+    ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
     ['After a meal', [['Median time to wee',duration(s.mealWee)],['Median time to poo',duration(s.mealPoo)]]]
   ];
   $('stats').innerHTML = groups.map(([heading,rows]) => `<div><h3>${heading}</h3>${rows.map(([label,value]) => `<div class="stat-line"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`).join('');
@@ -422,10 +450,10 @@ function connectEvents() {
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
-  setInterval(() => {const date = localDate(new Date()); if (date !== lastDate) {lastDate = date; render();}},60000);
+  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render();} else renderHeader(activeEvents(),now);},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}
