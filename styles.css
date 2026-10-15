@@ -109,6 +109,7 @@ header .page-tabs{justify-self:auto}
 .chart-point:hover,.chart-point:focus{opacity:1}
 .chart-point:focus .chart-hit-area{stroke:var(--green);stroke-width:1.5;stroke-opacity:.7}
 .chart-hit-area{fill:transparent;stroke:transparent}
+.chart-accident-cue{pointer-events:none}.chart-accident-cue circle{fill:#b65a3d;stroke:#fffef9;stroke-width:.8}.chart-accident-cue text{fill:#fff;font:700 5px system-ui,sans-serif}
 .chart-point.chart-series-wee,.chart-reference.chart-series-wee{fill:var(--gold)}
 .chart-point.chart-series-poo,.chart-reference.chart-series-poo{fill:var(--brown)}
 .chart-point.chart-series-meal-poo,.chart-reference.chart-series-meal-poo{fill:var(--meal)}

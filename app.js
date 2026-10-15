@@ -329,7 +329,7 @@ function intervalObservations(events, type) {
   for (let i=1;i<series.length;i++) {
     const startEvent=series[i-1], endEvent=series[i], minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
     if (type==='wee' && accident(startEvent)) continue;
-    if (minutes>0 && minutes<=24*60) observations.push({metric:type,startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
+    if (minutes>0 && minutes<=24*60) observations.push({metric:type,startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes,accident:accident(endEvent)});
   }
   return observations;
 }
@@ -343,7 +343,7 @@ function timingObservations(events) {
     if (event.type!=='poo' || !mealCandidate) continue;
     const minutes=(new Date(event.datetime)-new Date(mealCandidate.datetime))/60000;
     if (minutes>0) {
-      if (minutes<=12*60) observations['meal-poo'].push({metric:'meal-poo',startEvent:mealCandidate,endEvent:event,completedAt:new Date(event.datetime).getTime(),minutes});
+      if (minutes<=12*60) observations['meal-poo'].push({metric:'meal-poo',startEvent:mealCandidate,endEvent:event,completedAt:new Date(event.datetime).getTime(),minutes,accident:accident(event)});
       mealCandidate=null;
     }
   }
@@ -401,8 +401,8 @@ const CHART_SERIES = {
 
 function chartPointLabel(item) {
   const date=shortDate(dateOf(item.endEvent)), time=item.endEvent.datetime.slice(11,16), elapsed=compactDuration(item.minutes);
-  if (item.metric==='meal-poo') return `Meal → poo\n${date}\nMeal ${item.startEvent.datetime.slice(11,16)}\nPoo ${time}\n${elapsed}`;
-  return `${CHART_SERIES[item.metric].label}\n${date} ${time}\n${elapsed}\nPrevious ${item.metric} ${item.startEvent.datetime.slice(11,16)}`;
+  const detail=item.metric==='meal-poo'?`Meal → poo\n${date}\nMeal ${item.startEvent.datetime.slice(11,16)}\nPoo ${time}\n${elapsed}`:`${CHART_SERIES[item.metric].label}\n${date} ${time}\n${elapsed}\nPrevious ${item.metric} ${item.startEvent.datetime.slice(11,16)}`;
+  return item.accident?detail+'\nEnded in inside accident':detail;
 }
 
 function chartMarker(symbol,x,y,size=5) {
@@ -496,7 +496,8 @@ function renderTimingChart(events) {
     }
     for (const point of positioned) {
       const label=chartPointLabel(point.item), plain=label.replaceAll('\n','. '),symbol=CHART_SERIES[row.metric].symbol;
-      chartParts.push(`<g class="chart-point ${seriesClass}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHTML(plain)}" data-metric="${row.metric}" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title><circle class="chart-hit-area" r="10"/>${chartMarker(symbol,0,0,4)}</g>`);
+      const accidentCue=point.item.accident?'<g class="chart-accident-cue" aria-hidden="true"><circle cx="6" cy="-6" r="3.5"/><text x="6" y="-4.2" text-anchor="middle">!</text></g>':'';
+      chartParts.push(`<g class="chart-point ${seriesClass}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHTML(plain)}" data-metric="${row.metric}" data-accident="${point.item.accident}" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title><circle class="chart-hit-area" r="10"/>${chartMarker(symbol,0,0,4)}${accidentCue}</g>`);
     }
   }
   chartParts.push(...medianLabelParts);

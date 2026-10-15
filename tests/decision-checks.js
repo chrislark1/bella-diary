@@ -40,7 +40,7 @@ async function decisionSupportChecks() {
   const accidentOutdoor=weeSequence([weeEvent('acc-start','2026-10-01T08:00','inside'),weeEvent('out-end','2026-10-01T09:00')]);
   const accidentPair=weeSequence([weeEvent('acc-a','2026-10-01T08:00','inside'),weeEvent('acc-b','2026-10-01T09:00','inside')]);
   const noBridge=weeSequence([weeEvent('bridge-start','2026-10-01T08:00'),weeEvent('bridge-accident','2026-10-01T09:00','inside'),weeEvent('bridge-end','2026-10-01T10:30')]);
-  check(outdoorPair.length===1&&outdoorPair[0].minutes===60&&outdoorAccident.length===1&&outdoorAccident[0].minutes===60&&accidentOutdoor.length===0&&accidentPair.length===0&&noBridge.length===1&&noBridge[0].startEvent.id==='bridge-start'&&noBridge[0].endEvent.id==='bridge-accident','P: wee intervals start outdoors only; an accident can end but never start or bridge an interval');
+  check(outdoorPair.length===1&&outdoorPair[0].minutes===60&&outdoorPair[0].accident===false&&outdoorAccident.length===1&&outdoorAccident[0].minutes===60&&outdoorAccident[0].accident===true&&accidentOutdoor.length===0&&accidentPair.length===0&&noBridge.length===1&&noBridge[0].startEvent.id==='bridge-start'&&noBridge[0].endEvent.id==='bridge-accident'&&noBridge[0].accident===true,'P: wee interval accident state follows the end event; accidents can end but never start or bridge an interval');
   const weeMetricEvents=[
     weeEvent('day-a','2026-10-01T08:00'),weeEvent('day-a-end','2026-10-01T09:00','inside'),
     weeEvent('day-b','2026-10-03T08:00','inside'),weeEvent('day-b-end','2026-10-03T09:00'),
@@ -84,6 +84,26 @@ async function decisionSupportChecks() {
   const medianBounds=[...chart.querySelectorAll('.chart-axis')].find(line=>line.getAttribute('x1')===line.getAttribute('x2'));
   const collisionPositions=[...win.eval(`resolveMedianLabelPositions([{metric:'wee',y:100},{metric:'poo',y:100},{metric:'meal-poo',y:100}],20,120).values()`)].map(item=>item.labelY);
   check(medianLabels.length===3&&medianLabels.every(label=>label.textContent===win.eval(`compactDuration(${medianValues[label.dataset.metric]})`)&&label.getAttribute('aria-label').includes('median:')&&label.dataset.labelY>=Number(medianBounds.getAttribute('y1'))+10&&label.dataset.labelY<=Number(medianBounds.getAttribute('y2'))-10&&Math.abs(Number(label.dataset.medianY)-(24+348*(1-medianValues[label.dataset.metric]/165)))<.1)&&labelY.every((value,index)=>!index||value-labelY[index-1]>=20)&&JSON.stringify(collisionPositions)==='[80,100,120]','P: overall median labels show only compact durations, expose full accessible descriptions, follow true median heights, and resolve collisions deterministically within chart bounds');
+  const accidentChartEvents=[
+    {id:'wee-a',type:'wee',datetime:'2026-10-15T07:00',location:'outside',deletedAt:null},
+    {id:'wee-b',type:'wee',datetime:'2026-10-15T08:00',location:'outside',deletedAt:null},
+    {id:'wee-c',type:'wee',datetime:'2026-10-15T09:18',location:'inside',deletedAt:null},
+    {id:'poo-a',type:'poo',datetime:'2026-10-15T07:05',location:'outside',deletedAt:null},
+    {id:'poo-b',type:'poo',datetime:'2026-10-15T08:05',location:'outside',deletedAt:null},
+    {id:'meal-a',type:'meal',datetime:'2026-10-15T08:15',location:'outside',deletedAt:null},
+    {id:'poo-c',type:'poo',datetime:'2026-10-15T09:35',location:'inside',deletedAt:null}
+  ];
+  const accidentObservations=win.eval(`timingObservations(${JSON.stringify(accidentChartEvents)})`);
+  check(accidentObservations.wee.map(item=>item.accident).join(',')==='false,true'&&accidentObservations.poo.map(item=>item.accident).join(',')==='false,true'&&accidentObservations['meal-poo'].length===1&&accidentObservations['meal-poo'][0].accident===true,'P: Wee, Poo and Meal → poo accident flags use the existing accident helper on each observation end event');
+  win.eval(`timingMetricFilter='all';timingView='over-time';renderTimingChart(${JSON.stringify(accidentChartEvents)});`);
+  const accidentPoints=[...chart.querySelectorAll('.chart-point')],highlightedPoints=accidentPoints.filter(point=>point.dataset.accident==='true');
+  check(accidentPoints.length===5&&highlightedPoints.length===3&&highlightedPoints.every(point=>point.querySelector('.chart-accident-cue')&&point.getAttribute('aria-label').includes('Ended in inside accident')&&point.dataset.pointDetail.includes('Ended in inside accident'))&&accidentPoints.filter(point=>point.dataset.accident==='false').every(point=>!point.querySelector('.chart-accident-cue')),'P: Over time points retain metric markers, show a compact accident badge, and expose accident status in accessible labels and detail');
+  const accidentMinutes=Object.fromEntries(Object.entries(accidentObservations).map(([metric,items])=>[metric,items.map(item=>item.minutes)]));
+  win.eval(`timingView='ordered';renderTimingChart(${JSON.stringify(accidentChartEvents)});`);
+  const orderedAccidentPoints=[...chart.querySelectorAll('.chart-point[data-accident="true"]')];
+  check(orderedAccidentPoints.length===3&&orderedAccidentPoints.every(point=>point.querySelector('.chart-accident-cue')&&point.getAttribute('aria-label').includes('Ended in inside accident'))&&JSON.stringify(win.eval(`Object.fromEntries(Object.entries(timingObservations(${JSON.stringify(accidentChartEvents)})).map(([metric,items])=>[metric,items.map(item=>item.minutes)]))`))===JSON.stringify(accidentMinutes),'P: Ordered points keep each observation accident cue while preserving duration inputs used by trends, medians and percentile positions');
+  win.eval(`timingMetricFilter='wee';renderTimingChart(${JSON.stringify(accidentChartEvents)});`);
+  check(chart.querySelectorAll('.chart-point').length===2&&chart.querySelectorAll('.chart-accident-cue').length===1&&chart.querySelector('.chart-point[data-accident="true"]').dataset.metric==='wee','P: metric filtering retains accident cues only on the selected series');
   win.eval(`store.events=${JSON.stringify(fixture)}`);
   frame.contentDocument.querySelector('[data-chart-filter="poo"]').click();
   check(chart.querySelectorAll('.chart-point').length===3&&[...chart.querySelectorAll('.chart-point')].every(point=>point.dataset.metric==='poo')&&chart.querySelectorAll('.chart-median-label').length===1&&chart.querySelector('.chart-median-label').dataset.metric==='poo'&&frame.contentDocument.querySelector('[data-chart-filter="poo"]').getAttribute('aria-pressed')==='true','P: chart filters independently select the requested series and median label');
