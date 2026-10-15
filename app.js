@@ -411,6 +411,44 @@ function chartMarker(symbol,x,y,size=5) {
   return `<circle cx="${x}" cy="${y}" r="${size}"/>`;
 }
 
+function resolveMedianLabelPositions(labels,minY,maxY,minGap=20) {
+  const sorted=labels.map((label,index)=>({...label,index})).sort((a,b)=>a.y-b.y||a.index-b.index);
+  sorted.forEach((label,index)=>{label.labelY=Math.max(minY,Math.min(maxY,index?Math.max(label.y,sorted[index-1].labelY+minGap):label.y));});
+  if (sorted.length && sorted[sorted.length-1].labelY>maxY) {
+    sorted[sorted.length-1].labelY=maxY;
+    for (let index=sorted.length-2;index>=0;index--) sorted[index].labelY=Math.min(sorted[index].labelY,sorted[index+1].labelY-minGap);
+  }
+  if (sorted.length && sorted[0].labelY<minY) {
+    sorted[0].labelY=minY;
+    for (let index=1;index<sorted.length;index++) sorted[index].labelY=Math.max(sorted[index].labelY,sorted[index-1].labelY+minGap);
+  }
+  if (sorted.length) {
+    const wanted=sorted.reduce((sum,label)=>sum+label.y,0)/sorted.length, actual=sorted.reduce((sum,label)=>sum+label.labelY,0)/sorted.length;
+    const shift=Math.max(minY-sorted[0].labelY,Math.min(maxY-sorted[sorted.length-1].labelY,wanted-actual));
+    sorted.forEach(label=>{label.labelY+=shift;});
+  }
+  return new Map(sorted.map(label=>[label.metric,label]));
+}
+
+function chartMedianLabelSVG(metric,value,medianY,labelY,mode,index,geometry) {
+  const text=compactDuration(value), width=Math.max(38,text.length*6+8), height=18;
+  let boxX,leader='';
+  if (mode==='over-time') {
+    boxX=geometry.right-width-2;
+    const lineX=boxX-5;
+    leader='<line class="chart-median-leader" x1="'+(lineX-4)+'" x2="'+(lineX+2)+'" y1="'+medianY+'" y2="'+medianY+'"/>';
+    if (Math.abs(labelY-medianY)>1) leader+='<line class="chart-median-leader" x1="'+lineX+'" x2="'+lineX+'" y1="'+medianY+'" y2="'+labelY+'"/>';
+  } else {
+    const rightSide=index%2===0;
+    boxX=rightSide?geometry.center+10:geometry.center-width-10;
+    boxX=Math.max(geometry.left+2,Math.min(geometry.right-width-2,boxX));
+    if (Math.abs(labelY-medianY)>1) leader='<line class="chart-median-leader" x1="'+geometry.center+'" x2="'+(rightSide?boxX:boxX+width)+'" y1="'+medianY+'" y2="'+labelY+'"/>';
+  }
+  const fullLabel=CHART_SERIES[metric].label+' median: '+spokenDuration(value), cls=chartSeriesClass(metric);
+  const accessible=mode==='over-time'?'role="img" aria-label="'+escapeHTML(fullLabel)+'"':'aria-hidden="true"';
+  return '<g class="chart-median-label '+cls+'" data-metric="'+metric+'" data-median-y="'+medianY+'" data-label-y="'+labelY+'" '+accessible+'>'+leader+'<rect x="'+boxX+'" y="'+(labelY-height/2)+'" width="'+width+'" height="'+height+'" rx="4"/><text x="'+(boxX+4)+'" y="'+(labelY+3.5)+'">'+escapeHTML(text)+'</text></g>';
+}
+
 function chartSeriesClass(metric) {return `chart-series-${metric.replaceAll(' ','-')}`;}
 
 function renderTimingChart(events) {
@@ -426,6 +464,8 @@ function renderTimingChart(events) {
   const W=Math.max(320,target.clientWidth||document.querySelector('main').clientWidth),H=430,left=W<600?54:76,right=W<600?12:22,top=24,bottom=58,plotW=W-left-right,plotH=H-top-bottom;
   const maxMinutes=Math.max(...items.map(item=>item.minutes)), yMax=Math.max(30,maxMinutes*1.1);
   const y=value=>top+plotH*(1-value/yMax);
+  const medianData=series.map(row=>({metric:row.metric,value:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
+  const medianPositions=resolveMedianLabelPositions(medianData,top+10,top+plotH-10);
   const minTime=Math.min(...items.map(item=>item.completedAt)), maxTime=Math.max(...items.map(item=>item.completedAt)), sameTime=minTime===maxTime;
   const xMin=timingView==='ordered'?0:(sameTime?minTime-12*3600000:minTime), xMax=timingView==='ordered'?100:(sameTime?maxTime+12*3600000:maxTime);
   const x=value=>left+(value-xMin)/(xMax-xMin)*plotW;
@@ -437,26 +477,29 @@ function renderTimingChart(events) {
     tickFractions.map(fraction=>{const value=xMin+(xMax-xMin)*fraction,date=new Date(value),label=date.toLocaleDateString('en-GB',{day:'numeric',month:'short'}),sameDay=new Date(minTime).toDateString()===new Date(maxTime).toDateString();return {value,label:sameDay?`${localTime(date)}`:label};});
   const xAxis=xTicks.map(tick=>`<line class="chart-tick" x1="${x(tick.value)}" x2="${x(tick.value)}" y1="${top+plotH}" y2="${top+plotH+5}"/><text class="chart-axis-label" x="${x(tick.value)}" y="${top+plotH+21}" text-anchor="middle">${escapeHTML(tick.label)}</text>`).join('');
   const axisTitle=timingView==='ordered'?'Position in each metric’s duration distribution':'Completed at';
-  const chartParts=[];
+  const chartParts=[],medianLabelParts=[];
   for (const row of series) {
     const ordered=timingView==='ordered'?[...row.items].sort((a,b)=>a.minutes-b.minutes||a.completedAt-b.completedAt):row.items;
     const positioned=ordered.map((item,index)=>({item,x:timingView==='ordered'?x(percentileRank(index,ordered.length)):x(item.completedAt),y:y(item.minutes)}));
     const seriesClass=chartSeriesClass(row.metric);
+    const overallMedian=medianPositions.get(row.metric);
+    if (overallMedian) medianLabelParts.push(chartMedianLabelSVG(row.metric,overallMedian.value,overallMedian.y,overallMedian.labelY,timingView,medianLabelParts.length,{left,right:W-right,center:x(50)}));
     if (timingView==='over-time') {
       const medians=trailingMedianObservations(row.items).map((trend,index)=>({...positioned[index],median:trend.median}));
       let segment=[];
       const flush=()=>{if(segment.length>1)chartParts.push(`<path class="chart-trend ${seriesClass}" d="${segment.map((point,index)=>`${index?'L':'M'} ${point.x} ${y(point.median)}`).join(' ')}"/>`);segment=[];};
       medians.forEach(point=>{if(point.median===null)flush();else {segment.push(point);chartParts.push(`<circle class="chart-trend-point ${seriesClass}" cx="${point.x}" cy="${y(point.median)}" r="2.5"/>`);}});flush();
     } else if (ordered.length) {
-      const med=median(ordered.map(item=>item.minutes)), center=x(50);
+      const med=overallMedian?.value, center=x(50);
       if (positioned.length>1) chartParts.push(`<path class="chart-ordered ${seriesClass}" d="${positioned.map((point,index)=>`${index?'L':'M'} ${point.x} ${point.y}`).join(' ')}"/>`);
-      if (ordered.length>=MIN_SAMPLES) chartParts.push(`<g class="chart-reference ${seriesClass}" tabindex="0" role="img" aria-label="${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)} at the 50th percentile.`)}"><title>${escapeHTML(`${CHART_SERIES[row.metric].label}: median ${compactDuration(med)}`)}</title>${chartMarker(CHART_SERIES[row.metric].symbol,center,y(med),6)}</g>`);
+      if (ordered.length>=MIN_SAMPLES) chartParts.push(`<g class="chart-reference ${seriesClass}" tabindex="0" role="img" aria-label="${escapeHTML(`${CHART_SERIES[row.metric].label} median: ${spokenDuration(med)}. 50th percentile.`)}"><title>${escapeHTML(`${CHART_SERIES[row.metric].label} median: ${spokenDuration(med)}`)}</title>${chartMarker(CHART_SERIES[row.metric].symbol,center,y(med),6)}</g>`);
     }
     for (const point of positioned) {
       const label=chartPointLabel(point.item), plain=label.replaceAll('\n','. '),symbol=CHART_SERIES[row.metric].symbol;
       chartParts.push(`<g class="chart-point ${seriesClass}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHTML(plain)}" data-metric="${row.metric}" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title><circle class="chart-hit-area" r="10"/>${chartMarker(symbol,0,0,4)}</g>`);
     }
   }
+  chartParts.push(...medianLabelParts);
   const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>`;
   const hasQualifiedDistribution=series.some(row=>row.items.length>=MIN_SAMPLES);
   const orderedIqrBand=timingView==='ordered'&&hasQualifiedDistribution?`<rect class="chart-iqr-band" x="${x(25)}" y="${top}" width="${x(75)-x(25)}" height="${plotH}" aria-hidden="true"/>`:'';

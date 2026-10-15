@@ -120,6 +120,13 @@ header .page-tabs{justify-self:auto}
 .chart-trend-point{opacity:.8}.chart-trend-point.chart-series-wee{fill:var(--gold)}.chart-trend-point.chart-series-poo{fill:var(--brown)}.chart-trend-point.chart-series-meal-poo{fill:var(--meal)}
 .chart-iqr-band{fill:#879187;opacity:.12;pointer-events:none}
 .chart-reference{outline:none}.chart-reference:focus{stroke:var(--green);stroke-width:2}
+.chart-median-label{pointer-events:none}
+.chart-median-label.chart-series-wee{color:var(--gold)}
+.chart-median-label.chart-series-poo{color:var(--brown)}
+.chart-median-label.chart-series-meal-poo{color:var(--meal)}
+.chart-median-label rect{fill:#fffef9;fill-opacity:.96;stroke:currentColor;stroke-opacity:.35}
+.chart-median-label text{fill:currentColor;font:600 10px system-ui,sans-serif}
+.chart-median-leader{stroke:currentColor;stroke-width:1}
 .chart-point-detail{min-height:20px;margin:4px 0 0;font-size:11px;line-height:1.5;white-space:pre-line;color:var(--muted)}
 .numeric-stats-title{margin:22px 0 12px}
 .timeline-now{position:absolute;z-index:1;top:0;bottom:0;width:1.5px;background:#b65a3d;opacity:.8;pointer-events:none}
@@ -127,4 +134,4 @@ header .page-tabs{justify-self:auto}
 .now-axis-label{z-index:2;top:-11px;padding:1px 4px;border-radius:4px;background:#b65a3d;color:white;font:9px system-ui,sans-serif;line-height:1.2;transform:translateX(-50%)!important;white-space:nowrap}
 .now-axis-label.near-tick{visibility:hidden}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-@media(max-width:640px){.chart-toolbar{align-items:flex-start}.chart-controls{width:100%;justify-content:space-between;gap:4px}.chart-controls button{padding-inline:6px;font-size:10px}.chart-legend{gap:9px;font-size:10px}.chart-axis-label,.chart-axis-title{font-size:11px}.now-axis-label{display:none}}
+@media(max-width:640px){.chart-toolbar{align-items:flex-start}.chart-controls{width:100%;justify-content:space-between;gap:4px}.chart-controls button{padding-inline:6px;font-size:10px}.chart-legend{gap:9px;font-size:10px}.chart-axis-label,.chart-axis-title{font-size:11px}.chart-median-label text{font-size:9px}.now-axis-label{display:none}}
