@@ -5,6 +5,22 @@ async function decisionSupportChecks() {
   const fixedClock = `window.__testNow=Date.parse('2026-10-14T12:15:00');const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){if(args.length)super(...args);else super(window.__testNow)}static now(){return window.__testNow}static parse(...args){return NativeDate.parse(...args)}static UTC(...args){return NativeDate.UTC(...args)}};window.__minuteTick=null;const nativeInterval=window.setInterval;window.setInterval=(callback,delay,...args)=>delay===60000?(window.__minuteTick=()=>callback(...args),0):nativeInterval(callback,delay,...args);window.__saveEvents=0;window.addEventListener('bella-local-save',()=>window.__saveEvents++);`;
   const frame = await start(fixedClock);
   const win = frame.contentWindow;
+  const adaptiveBins=win.eval(`(()=>{activeWindow='all';hasBinSizePreference=false;const results=[];for(const days of [5,6,8,9]){const events=Array.from({length:days},(_,index)=>({type:'wee',datetime:'2026-10-'+String(14-index).padStart(2,'0')+'T08:00'}));renderAggregate(events,new Date('2026-10-14T12:15'));results.push([days,activeBinSize,document.querySelectorAll('#aggregate .hour-bucket').length]);}return results;})()`);
+  check(JSON.stringify(adaptiveBins)==='[[5,120,48],[6,90,64],[8,90,64],[9,60,96]]'&&localStorage.getItem('bellaDiary.aggregateBinSize')===null,'P: automatic bucket defaults adapt to tracked days in the selected window without saving an automatic choice');
+  const accidentFixture = [
+    ['wee','2026-10-12T18:10','inside'],['poo','2026-10-12T18:45','inside'],['wee','2026-10-12T19:30','inside'],
+    ['poo','2026-10-13T19:10','inside'],['wee','2026-10-14T20:30','inside'],['poo','2026-10-14T20:45','inside'],
+    ['wee','2026-10-11T18:20','outside'],['poo','2026-10-11T19:00','outside'],['wee','2026-10-01T18:30','inside'],
+    ['wee','2026-10-14T18:00','inside','2026-10-14T18:01:00.000Z'],['meal','2026-10-13T18:15','']
+  ].map(([type,datetime,location,deletedAt],index)=>({id:`aggregate-${index}`,type,datetime,location,deletedAt:deletedAt||null}));
+  const accidentResults=win.eval(`(()=>{store.events=${JSON.stringify(accidentFixture)};const active=activeEvents();const dayCount=new Set(active.map(dateOf)).size;const accidents=bucketDistribution(active,'accidents',dayCount,120,{distinctDays:true});const wees=bucketDistribution(active,'wee',dayCount,120);return {accident:accidents[9],later:accidents[10],wee:wees[9],days:dayCount};})()`);
+  check(accidentResults.days===5&&accidentResults.accident.count===4&&accidentResults.accident.days===2&&accidentResults.accident.total===7&&accidentResults.accident.strength===1&&accidentResults.later.count===2&&accidentResults.later.days===1&&accidentResults.later.strength===.5,'P: accident bins count distinct active inside-event days for shading while retaining raw counts; outside events, tombstones and meals do not contribute');
+  check(accidentResults.wee.count===3&&accidentResults.wee.strength===1,'P: ordinary wee bucket count and shading remain raw-event based');
+  const accidentRows=win.eval(`(()=>{const active=activeEvents();const result=[];for(const size of [30,60,90,120]){activeBinSize=size;hasBinSizePreference=true;activeWindow='7';renderAggregate(active,new Date('2026-10-14T12:15'));const row=document.querySelector('#aggregate .accident-buckets');const index=Math.floor(18*60/size);result.push([size,document.querySelectorAll('#aggregate .aggregate-row').length,row.querySelectorAll('.hour-bucket').length,row.querySelectorAll('.aggregate-now').length,row.querySelectorAll('.hour-bucket')[index].getAttribute('aria-label')]);}return result;})()`);
+  check(accidentRows.length===4&&accidentRows.every(([size,rows,buckets,now,label])=>rows===4&&buckets===1440/size&&now===1&&label.startsWith('Accidents, ')&&label.includes('of 4 diary days')&&label.includes('recorded accident'))&&accidentRows.find(([size])=>size===120)[4].includes('Seen on 2 of 4 diary days; 4 recorded accidents'),'P: Accidents row uses every supported bin size, accessible raw-count/day detail, and the shared Now marker');
+  const dayWindowLabel=win.eval(`(()=>{activeWindow='7';activeBinSize=120;renderAggregate(activeEvents(),new Date('2026-10-14T12:15'));return document.querySelectorAll('#aggregate .accident-buckets .hour-bucket')[9].getAttribute('aria-label');})()`);
+  check(dayWindowLabel.includes('the last 7 days')&&dayWindowLabel.includes('2 of 4 diary days')&&dayWindowLabel.includes('4 recorded accidents'),'P: accident aggregation and diary-day denominator respect the selected window');
+  win.eval(`activeWindow='14';hasBinSizePreference=false;renderAggregate([],new Date('2026-10-14T12:15'));`);
   const fixture = [
     ['wee','08:00'],['wee','09:00'],['wee','11:00'],['wee','12:00'],
     ['poo','06:00'],['poo','08:00'],['poo','10:30'],['poo','12:00'],
@@ -17,8 +33,50 @@ async function decisionSupportChecks() {
   const demo={...fixture.find(event=>event.type==='meal'),id:'diagnostic-demo',datetime:'2026-10-14T13:00',demo:true};
   const observations=win.eval(`timingObservations(${JSON.stringify([...fixture,tombstone,demo])})`);
   check(observations.wee.length===3&&observations.poo.length===3&&observations['meal-poo'].length===3&&![...observations.wee,...observations.poo,...observations['meal-poo']].some(item=>item.startEvent.id==='deleted-latest'||item.endEvent.id==='diagnostic-demo'),'P: shared chart observations use qualified active events and exclude tombstones/demo rows');
-  win.eval(`timingMetricFilter='all';timingView='over-time';renderTimingChart(${JSON.stringify([...fixture,tombstone,demo])});`);
+  const weeEvent=(id,datetime,location='outside')=>({id,type:'wee',datetime,location,deletedAt:null});
+  const weeSequence=items=>win.eval(`timingObservations(${JSON.stringify(items)})`).wee;
+  const outdoorPair=weeSequence([weeEvent('out-a','2026-10-01T08:00'),weeEvent('out-b','2026-10-01T09:00')]);
+  const outdoorAccident=weeSequence([weeEvent('out-start','2026-10-01T08:00'),weeEvent('acc-end','2026-10-01T09:00','inside')]);
+  const accidentOutdoor=weeSequence([weeEvent('acc-start','2026-10-01T08:00','inside'),weeEvent('out-end','2026-10-01T09:00')]);
+  const accidentPair=weeSequence([weeEvent('acc-a','2026-10-01T08:00','inside'),weeEvent('acc-b','2026-10-01T09:00','inside')]);
+  const noBridge=weeSequence([weeEvent('bridge-start','2026-10-01T08:00'),weeEvent('bridge-accident','2026-10-01T09:00','inside'),weeEvent('bridge-end','2026-10-01T10:30')]);
+  check(outdoorPair.length===1&&outdoorPair[0].minutes===60&&outdoorAccident.length===1&&outdoorAccident[0].minutes===60&&accidentOutdoor.length===0&&accidentPair.length===0&&noBridge.length===1&&noBridge[0].startEvent.id==='bridge-start'&&noBridge[0].endEvent.id==='bridge-accident','P: wee intervals start outdoors only; an accident can end but never start or bridge an interval');
+  const weeMetricEvents=[
+    weeEvent('day-a','2026-10-01T08:00'),weeEvent('day-a-end','2026-10-01T09:00','inside'),
+    weeEvent('day-b','2026-10-03T08:00','inside'),weeEvent('day-b-end','2026-10-03T09:00'),
+    weeEvent('day-c','2026-10-05T07:00'),weeEvent('day-c-end','2026-10-05T08:00','inside'),
+    weeEvent('day-d','2026-10-07T08:00'),weeEvent('day-d-end','2026-10-07T10:30'),
+    weeEvent('night-a','2026-10-09T22:30'),weeEvent('night-a-end','2026-10-10T05:00','inside'),
+    weeEvent('night-b','2026-10-12T23:00','inside'),weeEvent('night-b-end','2026-10-13T04:00'),
+    weeEvent('night-c','2026-10-15T22:00'),weeEvent('night-c-end','2026-10-16T06:00'),
+    weeEvent('night-d','2026-10-18T22:00'),weeEvent('night-d-end','2026-10-19T05:00')
+  ];
+  const weeStats=win.eval(`statistics(${JSON.stringify(weeMetricEvents)})`),weeMetricObs=weeSequence(weeMetricEvents);
+  check(weeMetricObs.length===6&&weeStats.interval===270&&weeStats.daytime===150&&weeStats.overnight===480,'P: median and longest daytime/overnight gaps use the same valid outdoor-start wee observations');
+  const pooEvent=(id,datetime)=>({id,type:'poo',datetime,location:'outside',deletedAt:null});
+  const mealEvent=(id,datetime)=>({id,type:'meal',datetime,deletedAt:null});
+  const mealPooObs=items=>win.eval(`timingObservations(${JSON.stringify(items)})`);
+  const firstPooOnly=mealPooObs([mealEvent('meal-a','2026-10-01T08:00'),pooEvent('poo-first','2026-10-01T10:00'),pooEvent('poo-later','2026-10-01T12:00')]);
+  const mostRecentMeal=mealPooObs([mealEvent('meal-old','2026-10-01T08:00'),mealEvent('meal-new','2026-10-01T12:00'),pooEvent('poo-new','2026-10-01T13:00')]);
+  const beyondWindow=mealPooObs([mealEvent('meal-expired','2026-10-01T08:00'),pooEvent('poo-expired','2026-10-01T21:00')]);
+  const twoPairs=mealPooObs([mealEvent('meal-one','2026-10-01T08:00'),pooEvent('poo-one','2026-10-01T09:00'),mealEvent('meal-two','2026-10-01T12:00'),pooEvent('poo-two','2026-10-01T13:30')]);
+  check(firstPooOnly['meal-poo'].length===1&&firstPooOnly['meal-poo'][0].endEvent.id==='poo-first'&&mostRecentMeal['meal-poo'].length===1&&mostRecentMeal['meal-poo'][0].startEvent.id==='meal-new'&&beyondWindow['meal-poo'].length===0&&twoPairs['meal-poo'].length===2&&twoPairs['meal-poo'].map(item=>item.minutes).join(',')==='60,90','P: meal-to-poo pairs once with the first poo for the most recent unpaired meal, within 12 hours');
+  check(firstPooOnly.poo.length===1&&firstPooOnly.poo[0].minutes===120,'P: consecutive poo-gap observations remain unchanged');
+  const sharedRuleEvents=[
+    weeEvent('shared-w1','2026-10-01T08:00'),weeEvent('shared-wa1','2026-10-01T09:00','inside'),weeEvent('shared-w2','2026-10-01T10:30'),
+    weeEvent('shared-wa2','2026-10-03T08:00','inside'),weeEvent('shared-w3','2026-10-03T09:00'),
+    weeEvent('shared-w4','2026-10-05T08:00'),weeEvent('shared-w5','2026-10-05T09:00'),
+    weeEvent('shared-w6','2026-10-07T08:00'),weeEvent('shared-w7','2026-10-07T11:00'),
+    mealEvent('shared-m1','2026-10-01T07:00'),pooEvent('shared-p1','2026-10-01T08:00'),pooEvent('shared-p1-later','2026-10-01T12:00'),
+    mealEvent('shared-m2a','2026-10-03T08:00'),mealEvent('shared-m2b','2026-10-03T12:00'),pooEvent('shared-p2','2026-10-03T13:00'),
+    mealEvent('shared-m3','2026-10-05T07:00'),pooEvent('shared-p3','2026-10-05T10:00'),
+    mealEvent('shared-m4','2026-10-07T07:00'),pooEvent('shared-p4','2026-10-07T10:00')
+  ];
+  const sharedRuleObs=mealPooObs(sharedRuleEvents),sharedRuleStats=win.eval(`statistics(${JSON.stringify(sharedRuleEvents)})`);
   const chart=frame.contentDocument.getElementById('timing-chart-plot');
+  win.eval(`timingMetricFilter='all';timingView='over-time';renderTimingChart(${JSON.stringify(sharedRuleEvents)});`);
+  check(sharedRuleStats.interval===win.eval(`median(${JSON.stringify(sharedRuleObs.wee.map(item=>item.minutes))})`)&&sharedRuleStats.mealPoo===win.eval(`median(${JSON.stringify(sharedRuleObs['meal-poo'].map(item=>item.minutes))})`)&&chart.querySelectorAll('.chart-point[data-metric="wee"]').length===sharedRuleObs.wee.length&&chart.querySelectorAll('.chart-point[data-metric="meal-poo"]').length===sharedRuleObs['meal-poo'].length,'P: chart observations and Stats medians consume the same revised shared datasets');
+  win.eval(`timingMetricFilter='all';timingView='over-time';renderTimingChart(${JSON.stringify([...fixture,tombstone,demo])});`);
   const weeXs=[...chart.querySelectorAll('.chart-point[data-metric="wee"]')].map(point=>Number(point.transform.baseVal.consolidate().matrix.e)),pooPoints=[...chart.querySelectorAll('.chart-point[data-metric="poo"]')],pooXs=pooPoints.map(point=>Number(point.transform.baseVal.consolidate().matrix.e)),plotAxis=[...chart.querySelectorAll('.chart-axis')].find(line=>line.getAttribute('y1')===line.getAttribute('y2'));
   check(chart.querySelectorAll('.chart-point').length===9&&chart.querySelectorAll('.chart-trend-point').length===3&&weeXs.every((x,index)=>!index||x>weeXs[index-1])&&pooXs.every((x,index)=>!index||x>pooXs[index-1])&&pooPoints.every(point=>win.getComputedStyle(point).transform==='none'&&Number(point.transform.baseVal.consolidate().matrix.e)>=Number(plotAxis.getAttribute('x1'))&&Number(point.transform.baseVal.consolidate().matrix.e)<=Number(plotAxis.getAttribute('x2'))),'P: all series overlay at chronological positions, poo markers stay within the plot, and qualified 3-day median marks render');
   win.eval(`store.events=${JSON.stringify(fixture)}`);
@@ -48,7 +106,7 @@ async function decisionSupportChecks() {
   check(frame.contentDocument.querySelectorAll('#timeline .timeline-now').length===2&&[...frame.contentDocument.querySelectorAll('#timeline .timeline-now')].every(line=>line.parentElement.classList.contains('plot'))&&frame.contentDocument.getElementById('timeline').getAttribute('aria-label').includes('12:00'),'P: Now segments align in every visible plot only, with one accessible current-time label');
   win.eval(`renderAggregate(${JSON.stringify(crossDay)},new Date('2026-10-14T12:00'));`);
   const aggregateNow=[...frame.contentDocument.querySelectorAll('#aggregate .aggregate-now')],aggregateAxisNow=frame.contentDocument.querySelector('#aggregate [data-now-axis-label]');
-  check(aggregateNow.length===3&&aggregateNow.every(line=>line.parentElement.classList.contains('bucket-strip')&&line.style.left==='50%')&&aggregateAxisNow?.style.left==='50%'&&aggregateNow.every(line=>!line.parentElement.parentElement.querySelector('.date-label').contains(line)),'P: Timing Summary Now markers align with the Diary axis and stay inside all three plotting rows');
+  check(aggregateNow.length===4&&aggregateNow.every(line=>line.parentElement.classList.contains('bucket-strip')&&line.style.left==='50%')&&aggregateAxisNow?.style.left==='50%'&&aggregateNow.every(line=>!line.parentElement.parentElement.querySelector('.date-label').contains(line)),'P: Timing Summary Now markers align with the Diary axis and stay inside all four plotting rows');
   win.eval(`store.events=${JSON.stringify([...fixture,tombstone])};renderHeader(activeEvents(),new Date('2026-10-14T12:15:00'));`);
   const header=frame.contentDocument.getElementById('summary'), decision=header.querySelectorAll('.metric');
   check(decision.length===5 && !header.textContent.includes("Today's wees") && !header.textContent.includes("Today's poos") && !header.textContent.includes("Today's meals") && decision[1].querySelector('strong').textContent==='15m','P: header has the five requested metrics, uses latest active wee and ignores tombstones');

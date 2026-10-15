@@ -2,7 +2,6 @@
 
 // One store, one filter, one editor. Datetimes are local wall-clock ISO strings.
 const WINDOW_KEY = 'bellaDiary.aggregateWindow';
-const BIN_SIZE_KEY = 'bellaDiary.aggregateBinSize';
 const TYPES = ['wee', 'poo', 'meal'];
 const CONSISTENCIES = ['Firm', 'Normal', 'Soft', 'Diarrhoea'];
 const MIN_SAMPLES = 3;
@@ -95,7 +94,7 @@ function validateEvents(input) {
 
 let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
-let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, timingMetricFilter = 'all', timingView = 'over-time', editingId = null, messageTimer;
+let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, hasBinSizePreference = false, timingMetricFilter = 'all', timingView = 'over-time', editingId = null, messageTimer;
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
 
@@ -257,14 +256,16 @@ function renderHeader(events, now = new Date()) {
   $('summary').innerHTML = metrics.map((metric,index) => `<div class="metric${index>0&&index<4?' decision-metric':''}" aria-label="${escapeHTML(metric.aria)}"><strong>${metric.value}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
 }
 
-function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize) {
+function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize, {distinctDays = false} = {}) {
   const bucketCount = Math.ceil(1440/binMinutes);
   const buckets = Array.from({length:bucketCount}, () => ({count:0, dates:new Set()}));
-  const matching = events.filter(event => event.type === type);
+  const matching = events.filter(event => distinctDays ? accident(event) : event.type === type);
   matching.forEach(event => {const bucket = buckets[Math.floor(minutesOf(event)/binMinutes)]; bucket.count++; bucket.dates.add(dateOf(event));});
-  const peak = Math.max(0,...buckets.map(bucket => bucket.count));
-  return buckets.map(bucket => ({count:bucket.count, days:bucket.dates.size, percent:matching.length ? Math.round(bucket.count/matching.length*100) : 0, strength:peak ? bucket.count/peak : 0, total:matching.length, diaryDays:trackedDays}));
+  const peak = Math.max(0,...buckets.map(bucket => distinctDays ? bucket.dates.size : bucket.count));
+  return buckets.map(bucket => ({count:bucket.count, days:bucket.dates.size, percent:matching.length ? Math.round(bucket.count/matching.length*100) : 0, strength:peak ? (distinctDays ? bucket.dates.size : bucket.count)/peak : 0, total:matching.length, diaryDays:trackedDays}));
 }
+
+function defaultBinSize(trackedDays) {return trackedDays<=5?120:trackedDays<=8?90:60;}
 
 function bucketTime(minute) {return `${pad(Math.floor(minute/60))}:${pad(minute%60)}`;}
 
@@ -273,15 +274,23 @@ function renderAggregate(events, now = new Date()) {
   const cutoff = activeWindow === 'all' ? null : (() => {const day = new Date(`${today}T12:00`); day.setDate(day.getDate() - Number(activeWindow) + 1); return localDate(day);})();
   const windowEvents = activeWindow === 'all' ? events : events.filter(event => dateOf(event) >= cutoff && dateOf(event) <= today);
   const trackedDays = new Set(windowEvents.map(dateOf)).size;
-  const labels = {wee:'Wees',poo:'Poos',meal:'Meals'};
+  if (!hasBinSizePreference) activeBinSize = defaultBinSize(trackedDays);
+  $('aggregate-bin-size').value = String(activeBinSize);
+  const rows = [
+    {type:'wee',label:'Wees',className:'wee-buckets'},
+    {type:'poo',label:'Poos',className:'poo-buckets'},
+    {type:'meal',label:'Meals',className:'meal-buckets'},
+    {type:'accidents',label:'Accidents',className:'accident-buckets',distinctDays:true}
+  ];
   const windowName = activeWindow === 'all' ? 'all time' : `the last ${activeWindow} days`;
   $('aggregate-count').textContent = `${trackedDays} ${trackedDays === 1 ? 'diary day' : 'diary days'} · ${windowEvents.length} events`;
   const bucketCount = Math.ceil(1440/activeBinSize);
-  $('aggregate').innerHTML = axisHTML(now) + TYPES.map(type => `<div class="time-row aggregate-row"><div class="date-label">${labels[type]}</div><div class="plot bucket-strip ${type}-buckets" style="--bucket-count:${bucketCount}">${bucketDistribution(windowEvents,type,trackedDays).map(({count,days,percent,strength,total,diaryDays},index) => {
+  $('aggregate').innerHTML = axisHTML(now) + rows.map(({type,label,className,distinctDays}) => `<div class="time-row aggregate-row"><div class="date-label">${label}</div><div class="plot bucket-strip ${className}" style="--bucket-count:${bucketCount}">${bucketDistribution(windowEvents,type,trackedDays,activeBinSize,{distinctDays}).map(({count,days,percent,strength,total,diaryDays},index) => {
     const start=index*activeBinSize, end=start+activeBinSize;
     const interval=`${bucketTime(start)}–${bucketTime(end)}`;
-    const label = `${labels[type]}, ${interval}, ${windowName}: ${total ? `${percent}% of recorded ${labels[type].toLowerCase()} (${count} of ${total}); seen on ${days} of ${diaryDays} diary days. Shading: ${Math.round(strength*100)}% of this row's busiest bucket` : `no recorded ${labels[type].toLowerCase()} ${windowName}`}`;
-    return `<button class="hour-bucket" style="--strength:${strength}" data-bucket-label="${escapeHTML(label)}" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"></button>`;
+    const detail = total ? (distinctDays ? `Seen on ${days} of ${diaryDays} diary days; ${count} recorded accident${count===1?'':'s'}. Shading: ${Math.round(strength*100)}% of this row's busiest time bin` : `${percent}% of recorded ${label.toLowerCase()} (${count} of ${total}); seen on ${days} of ${diaryDays} diary days. Shading: ${Math.round(strength*100)}% of this row's busiest bucket`) : `no recorded ${distinctDays?'accidents':label.toLowerCase()} ${windowName}`;
+    const bucketLabel = `${label}, ${interval}, ${windowName}: ${detail}`;
+    return `<button class="hour-bucket" style="--strength:${strength}" data-bucket-label="${escapeHTML(bucketLabel)}" aria-label="${escapeHTML(bucketLabel)}" title="${escapeHTML(bucketLabel)}"></button>`;
   }).join('')}<span class="timeline-now aggregate-now" style="left:${currentTimePercent(now)}%" aria-hidden="true"></span></div></div>`).join('');
 }
 
@@ -314,22 +323,29 @@ function renderTable(events) {
   $('data').innerHTML = events.length ? `<table><thead><tr><th>Date / time</th><th>Type</th><th>Details</th><th class="note-column">Note</th><th><span class="muted">Edit</span></th></tr></thead><tbody>${events.map(event => `<tr data-id="${escapeHTML(event.id)}"><td>${shortDate(dateOf(event))}<br>${event.datetime.slice(11,16)}</td><td><span class="symbol ${event.type}" aria-hidden="true"></span>${titleCase(event.type)}</td><td>${escapeHTML(details(event))}${accident(event) ? ' <span class="accident-example" aria-label="Inside accident">!</span>' : ''}<span class="table-note-inline">${escapeHTML(event.note)}</span></td><td class="note-column">${escapeHTML(event.note)}</td><td><button data-id="${escapeHTML(event.id)}" aria-label="Edit ${event.type} on ${escapeHTML(shortDate(dateOf(event)))} at ${event.datetime.slice(11,16)}">Edit</button></td></tr>`).join('')}</tbody></table>` : '<p class="empty">No events to show. Try another filter or add an entry.</p>';
 }
 
+function intervalObservations(events, type) {
+  const series=events.filter(event=>event.type===type);
+  const observations=[];
+  for (let i=1;i<series.length;i++) {
+    const startEvent=series[i-1], endEvent=series[i], minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
+    if (type==='wee' && accident(startEvent)) continue;
+    if (minutes>0 && minutes<=24*60) observations.push({metric:type,startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
+  }
+  return observations;
+}
+
 function timingObservations(events) {
   const sorted = events.filter(event => isActiveEvent(event) && event.demo !== true).slice().sort((a,b) => a.datetime.localeCompare(b.datetime));
-  const observations = {wee:[],poo:[],'meal-poo':[]};
-  for (const [type,metric] of [['wee','wee'],['poo','poo']]) {
-    const series=sorted.filter(event=>event.type===type);
-    for (let i=1;i<series.length;i++) {
-      const startEvent=series[i-1], endEvent=series[i], minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
-      if (minutes>0 && minutes<=24*60) observations[metric].push({metric,startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
+  const observations = {wee:intervalObservations(sorted,'wee'),poo:intervalObservations(sorted,'poo'),'meal-poo':[]};
+  let mealCandidate=null;
+  for (const event of sorted) {
+    if (event.type==='meal') {mealCandidate=event;continue;}
+    if (event.type!=='poo' || !mealCandidate) continue;
+    const minutes=(new Date(event.datetime)-new Date(mealCandidate.datetime))/60000;
+    if (minutes>0) {
+      if (minutes<=12*60) observations['meal-poo'].push({metric:'meal-poo',startEvent:mealCandidate,endEvent:event,completedAt:new Date(event.datetime).getTime(),minutes});
+      mealCandidate=null;
     }
-  }
-  const poos=sorted.filter(event=>event.type==='poo');
-  for (const startEvent of sorted.filter(event=>event.type==='meal')) {
-    const endEvent=poos.find(event=>new Date(event.datetime)>new Date(startEvent.datetime));
-    if (!endEvent) continue;
-    const minutes=(new Date(endEvent.datetime)-new Date(startEvent.datetime))/60000;
-    if (minutes>0 && minutes<=12*60) observations['meal-poo'].push({metric:'meal-poo',startEvent,endEvent,completedAt:new Date(endEvent.datetime).getTime(),minutes});
   }
   for (const series of Object.values(observations)) series.sort((a,b)=>a.completedAt-b.completedAt);
   return observations;
@@ -350,14 +366,8 @@ function statistics(events) {
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
   const dates = [...new Set(events.map(dateOf))];
   const observations=timingObservations(events);
-  const wees = sorted.filter(event => event.type === 'wee');
-  const daytime = [], overnight = [];
-  for (let i=0;i<wees.length-1;i++) {
-    const a=wees[i], b=wees[i+1], elapsed=(new Date(b.datetime)-new Date(a.datetime))/60000;
-    if (elapsed<=0 || elapsed>24*60) continue;
-    if (dateOf(a) === dateOf(b) && minutesOf(a) >= DAY_START && minutesOf(b) <= DAY_END) daytime.push(elapsed);
-    if (previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START) overnight.push(elapsed);
-  }
+  const daytime = observations.wee.filter(({startEvent:a,endEvent:b}) => dateOf(a) === dateOf(b) && minutesOf(a) >= DAY_START && minutesOf(b) <= DAY_END).map(item=>item.minutes);
+  const overnight = observations.wee.filter(({startEvent:a,endEvent:b}) => previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START).map(item=>item.minutes);
   const firsts = type => dates.map(date => sorted.find(event => event.type === type && dateOf(event) === date)).filter(Boolean).map(minutesOf);
   const meals = sorted.filter(event => event.type === 'meal');
   const mealTimes = [[],[],[]];
@@ -536,7 +546,9 @@ async function importJSON(file) {
 
 function connectEvents() {
   try {const savedWindow = localStorage.getItem(WINDOW_KEY); if (['7','14','30','all'].includes(savedWindow)) activeWindow = savedWindow;} catch {}
-  try {const savedBinSize = localStorage.getItem(BIN_SIZE_KEY); if (['30','60','90','120'].includes(savedBinSize)) activeBinSize = Number(savedBinSize);} catch {}
+  // Recalculate the default from the current diary on every load. In-session
+  // selector changes still take effect until the next load.
+  hasBinSizePreference = false;
   $('aggregate-window').value = activeWindow;
   $('aggregate-bin-size').value = String(activeBinSize);
   $('aggregate-window').addEventListener('change',event => {
@@ -546,8 +558,8 @@ function connectEvents() {
   });
   $('aggregate-bin-size').addEventListener('change',event => {
     activeBinSize = ['30','60','90','120'].includes(event.target.value) ? Number(event.target.value) : 60;
+    hasBinSizePreference = true;
     event.target.value = String(activeBinSize);
-    try {localStorage.setItem(BIN_SIZE_KEY,String(activeBinSize));} catch {notify('Could not save the bucket size on this device.');}
     renderAggregate(activeEvents());
   });
   $('timing-chart-controls').addEventListener('click',event=>{
@@ -589,7 +601,7 @@ function connectEvents() {
   setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render();} else {renderHeader(activeEvents(),now);updateNowMarker(now);}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the next poo within 12 hours, with at least three qualifying meals. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The accident-free streak starts on the latest recorded date and counts backwards through consecutive calendar dates with entries and no inside wee or poo. A missing date or an accident stops it. It is a streak of recorded days, not a claim about unrecorded days.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}

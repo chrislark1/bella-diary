@@ -136,7 +136,10 @@ async function run() {
 
   await reset(); const starting=await Promise.all([start(),start()]); frame=starting[0];
   check(state(frame).events.length===0 && state(frame).demoCleared,'B: fresh storage initializes an empty production diary');
-  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='60' && Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip')).length===3 && Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip')).every(strip=>strip.querySelectorAll('.hour-bucket').length===24),'B: timing summary defaults to 60-minute bins with 24 buckets per type');
+  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='120' && Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip')).length===4 && Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip')).every(strip=>strip.querySelectorAll('.hour-bucket').length===12) && frame.contentDocument.querySelector('.accident-buckets .hour-bucket').getAttribute('aria-label').includes('no recorded accidents'),'B: empty timing summary includes an accessible zero-activity Accidents row with 120-minute bins');
+  localStorage.setItem('bellaDiary.aggregateBinSize','60'); await reload(frame);
+  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='120','B: timing bin default is recalculated on load instead of retaining a stale saved size');
+  localStorage.removeItem('bellaDiary.aggregateBinSize'); await reload(frame);
   check(same(state(starting[0]),state(starting[1])) && (await databaseContents()).events.length===0,'B: simultaneous first launches initialize once without sample events');
   const seeded=state(frame);await reload(frame);
   check(same(state(frame),seeded),'B: reload preserves empty initialization');
@@ -222,12 +225,12 @@ async function run() {
   const preference=frame.contentDocument.getElementById('aggregate-window'); preference.value='7';preference.dispatchEvent(new win.Event('change',{bubbles:true}));await reload(frame);
   check(localStorage.getItem('bellaDiary.aggregateWindow')==='7' && frame.contentDocument.getElementById('aggregate-window').value==='7','C: aggregate-window preference stays in localStorage');
   localStorage.setItem('bellaDiary.aggregateBinSize','invalid'); await reload(frame);
-  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='60','C: invalid aggregate-bin preference safely falls back to 60 minutes');
+  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='120','C: timing bins recalculate from tracked days after an invalid saved size');
   const diaryBeforeBins=state(frame);
   frame.contentDocument.getElementById('aggregate-window').value='all'; frame.contentDocument.getElementById('aggregate-window').dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
   const binSelect=frame.contentDocument.getElementById('aggregate-bin-size'); binSelect.value='30';binSelect.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
   let strips=Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip'));
-  check(strips.length===3 && strips.every(strip=>strip.querySelectorAll('.hour-bucket').length===48),'C: 30-minute mode renders 48 equal buckets per type');
+  check(strips.length===4 && strips.every(strip=>strip.querySelectorAll('.hour-bucket').length===48),'C: 30-minute mode renders 48 equal buckets per type');
   const weeBuckets=Array.from(strips[0].querySelectorAll('.hour-bucket')), mealBuckets=Array.from(strips[2].querySelectorAll('.hour-bucket'));
   check(weeBuckets[16].getAttribute('aria-label').startsWith('Wees, 08:00–08:30') && weeBuckets[16].getAttribute('aria-label').includes('100% of recorded wees (1 of 1)') && weeBuckets[16].getAttribute('aria-label').includes('seen on 1 of 2 diary days') && weeBuckets[16].getAttribute('aria-label').includes('Shading: 100%'), 'C: half-hour assignment preserves interval, share, day and relative-shading detail');
   check(mealBuckets[15].getAttribute('aria-label').startsWith('Meals, 07:30–08:00'),'C: 07:30 meal maps to its correct half-hour bucket');
@@ -237,7 +240,7 @@ async function run() {
   check(Math.abs(binPlot.left-binAxis.left)<1 && Math.abs(binPlot.right-binAxis.right)<1 && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate .bucket-strip')).gridTemplateColumns.split(' ').length===48,'C: 48 buckets retain the same full-width 00–24 geometry');
   check(same(state(frame),diaryBeforeBins),'C: changing bucket size does not mutate diary data');
   await reload(frame); strips=Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip'));
-  check(localStorage.getItem('bellaDiary.aggregateBinSize')==='30' && frame.contentDocument.getElementById('aggregate-bin-size').value==='30' && strips[0].querySelectorAll('.hour-bucket').length===48,'C: selected bucket size survives reload using its local preference');
+  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='120' && strips[0].querySelectorAll('.hour-bucket').length===12,'C: bin selection resets to the tracked-day default on reload');
   const binSelectForSizes=frame.contentDocument.getElementById('aggregate-bin-size');
   const supportedSizes=[...binSelectForSizes.options].map(option=>option.value).join(',');
   binSelectForSizes.value='90';binSelectForSizes.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));strips=Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip'));
@@ -246,7 +249,7 @@ async function run() {
   binSelectForSizes.value='120';binSelectForSizes.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));strips=Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip'));
   check(strips.every(strip=>strip.querySelectorAll('.hour-bucket').length===12)&&strips[0].querySelectorAll('.hour-bucket')[4].getAttribute('aria-label').startsWith('Wees, 08:00–10:00'),'C: 120-minute bins render 12 buckets with generic interval labels');
   await reload(frame);strips=Array.from(frame.contentDocument.querySelectorAll('#aggregate .bucket-strip'));
-  check(localStorage.getItem('bellaDiary.aggregateBinSize')==='120'&&frame.contentDocument.getElementById('aggregate-bin-size').value==='120'&&strips[0].querySelectorAll('.hour-bucket').length===12,'C: 120-minute preference survives reload');
+  check(frame.contentDocument.getElementById('aggregate-bin-size').value==='120'&&strips[0].querySelectorAll('.hour-bucket').length===12,'C: 120-minute bins remain selected after load-time defaulting');
   frame.contentDocument.getElementById('aggregate-bin-size').value='60';frame.contentDocument.getElementById('aggregate-bin-size').dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
   frame.contentDocument.getElementById('aggregate-window').value='7';frame.contentDocument.getElementById('aggregate-window').dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
 
@@ -287,9 +290,9 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v28');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v28'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v28 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v34');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v34'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v34 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];

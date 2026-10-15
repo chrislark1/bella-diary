@@ -75,6 +75,8 @@ header .page-tabs{justify-self:auto}
 
 /* Keep the timing window beside its heading and remove explanatory clutter on phones. */
 .bucket-strip{grid-template-columns:repeat(var(--bucket-count,24),minmax(0,1fr))}
+.accident-buckets{background:#fae8e4;--bucket-color:210,55,36}
+.accident-buckets .hour-bucket,.accident-buckets .hour-bucket:hover{background-color:rgba(205,35,30,var(--strength))}
 .section-title-controls{display:flex;align-items:center;gap:10px;min-width:0}
 .aggregate-controls{justify-content:flex-start;gap:6px}
 .aggregate-count{white-space:nowrap}
