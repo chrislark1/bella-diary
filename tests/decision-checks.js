@@ -142,6 +142,10 @@ async function decisionSupportChecks() {
   const header=frame.contentDocument.getElementById('summary'), decision=header.querySelectorAll('.metric');
   check(decision.length===5 && !header.textContent.includes("Today's wees") && !header.textContent.includes("Today's poos") && !header.textContent.includes("Today's meals") && decision[1].querySelector('strong').textContent==='15m','P: header has the five requested metrics, uses latest active wee and ignores tombstones');
   check(decision[2].querySelector('strong').textContent==='1h 15m' && decision[3].querySelector('strong').textContent==='15m' && decision[1].getAttribute('aria-label').includes('15 minutes') && decision[3].textContent.includes('Median 2h 00m'),'P: latest meal/poo values, median details and accessible descriptions render correctly');
+  const freeEvents=[{...fixture[0],datetime:'2026-10-12T08:00',location:'inside'},{...fixture[4],datetime:'2026-10-13T10:00',location:'inside'},{...fixture[0],datetime:'2026-10-14T11:00'}];
+  win.eval(`renderHeader(${JSON.stringify(freeEvents)},new Date('2026-10-14T12:15'));renderStats(${JSON.stringify(freeEvents)},new Date('2026-10-14T12:15'));`);
+  const freeMetric=header.querySelector('.metric:last-child');
+  check(freeMetric.querySelector('strong').textContent==='1d 2h'&&freeMetric.getAttribute('aria-label')==='1 day 2 hours accident-free'&&frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak1d 2h')&&win.eval(`accidentFreeTime([{...${JSON.stringify(fixture[0])},location:'inside'}],new Date('2026-10-14T13:30')).value==='5h'&&accidentFreeTime([${JSON.stringify(fixture[0])}],new Date('2026-10-14T09:00')).value==='1h'&&accidentFreeTime([]).value==='—'`),'P: header and Stats show completed accident-free days and hours, omitting zero days, since the latest accident or first entry');
   const headerAccidents=fixture.map(event=>({...event,location:event.datetime.endsWith('12:00')||event.type==='meal'?'inside':'outside'}));
   win.eval(`renderHeader(${JSON.stringify(headerAccidents)},new Date('2026-10-14T12:15:00'));`);
   const accidentMetrics=header.querySelectorAll('.metric');
