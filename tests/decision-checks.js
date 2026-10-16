@@ -28,6 +28,12 @@ async function decisionSupportChecks() {
   ].map(([type,time],index)=>({id:`decision-${index}`,type,datetime:`2026-10-14T${time}`,deletedAt:null,location:'outside'}));
   const stats=win.eval(`statistics(${JSON.stringify(fixture)})`);
   check(stats.interval===60 && stats.pooInterval===120 && stats.mealPoo===60,'P: wee median, meal-to-poo median and poo interval use unchanged rules and three qualifying examples');
+  const rateEvents=fixture.map((event,index)=>({...event,location:[0,4,5,8].includes(index)?'inside':'outside'}));
+  win.eval(`renderStats(${JSON.stringify(rateEvents)},new Date('2026-10-14T12:15'));`);
+  const frequencyText=frame.contentDocument.querySelector('#stats>div').textContent;
+  check(frequencyText.includes('Wee accidents (7 days)25%')&&frequencyText.includes('Poo accidents (7 days)50%')&&win.eval(`statistics(${JSON.stringify(fixture)},new Date('2026-10-14T12:15')).accidentPercent('wee')==='0%'&&statistics([]).accidentPercent('poo')==='—'&&statistics([${JSON.stringify(rateEvents[0])}],new Date('2026-10-14T12:15')).accidentPercent('wee')==='100%'`),'P: Frequency shows per-type 7-day accident percentages, excludes meals from denominators, and handles zero, all and missing accidents');
+  const rollingRates=[['wee','inside','2026-10-07T12:15'],['wee','outside','2026-10-08T12:15'],['wee','outside','2026-10-07T12:14'],['wee','inside','2026-10-14T12:16'],['poo','inside','2026-10-01T12:15']].map(([type,location,datetime])=>({type,location,datetime,deletedAt:null}));
+  check(win.eval(`(()=>{const s=statistics(${JSON.stringify(rollingRates)},new Date('2026-10-14T12:15'));return s.accidentPercent('wee')==='50%'&&s.accidentPercent('poo')==='—';})()`),'P: accident percentages include the rolling 7-day boundary and exclude older and future events');
   check(win.eval(`compactDuration(8)==='8m'&&compactDuration(47)==='47m'&&compactDuration(65)==='1h 05m'&&compactDuration(222)==='3h 42m'&&compactDuration(1560)==='1d 2h'&&compactDuration(null)==='—'`),'P: compact elapsed formatter covers minutes, hours, days and missing values');
   const tombstone={...fixture.find(event=>event.type==='wee'&&event.datetime.endsWith('11:00')),id:'deleted-latest',datetime:'2026-10-14T12:10',deletedAt:'2026-10-14T12:11:00.000Z'};
   const demo={...fixture.find(event=>event.type==='meal'),id:'diagnostic-demo',datetime:'2026-10-14T13:00',demo:true};
