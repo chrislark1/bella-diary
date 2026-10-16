@@ -240,20 +240,21 @@ function markHTML(event) {
 
 function renderHeader(events, now = new Date()) {
   const stats = statistics(events);
+  const latestByType=Object.fromEntries(TYPES.map(type=>[type,events.filter(event=>event.type===type).reduce((found,event)=>!found||Date.parse(event.datetime)>Date.parse(found.datetime)?event:found,null)]));
   const since = type => {
-    const latest = events.filter(event => event.type === type).reduce((found,event) => !found || Date.parse(event.datetime) > Date.parse(found.datetime) ? event : found,null);
+    const latest = latestByType[type];
     if (!latest) return null;
     const elapsed = (now.getTime()-new Date(latest.datetime).getTime())/60000;
     return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
   };
   const metrics = [
     {value:new Set(events.map(dateOf)).size,label:'Days tracked',aria:`${new Set(events.map(dateOf)).size} days tracked`},
-    {value:compactDuration(since('wee')),description:'Since last wee',median:`Median ${compactDuration(stats.interval)}`,aria:`Time since last wee: ${spokenDuration(since('wee'))}. Median wee interval: ${spokenDuration(stats.interval)}.`},
+    {value:compactDuration(since('wee')),accident:since('wee')!==null&&accident(latestByType.wee),description:'Since last wee',median:`Median ${compactDuration(stats.interval)}`,aria:`Time since last wee: ${spokenDuration(since('wee'))}. Median wee interval: ${spokenDuration(stats.interval)}.`},
     {value:compactDuration(since('meal')),description:'Since last meal',median:`Meal → poo median ${compactDuration(stats.mealPoo)}`,aria:`Time since last meal: ${spokenDuration(since('meal'))}. Median meal to poo: ${spokenDuration(stats.mealPoo)}.`},
-    {value:compactDuration(since('poo')),description:'Since last poo',median:`Median ${compactDuration(stats.pooInterval)}`,aria:`Time since last poo: ${spokenDuration(since('poo'))}. Median poo interval: ${spokenDuration(stats.pooInterval)}.`},
+    {value:compactDuration(since('poo')),accident:since('poo')!==null&&accident(latestByType.poo),description:'Since last poo',median:`Median ${compactDuration(stats.pooInterval)}`,aria:`Time since last poo: ${spokenDuration(since('poo'))}. Median poo interval: ${spokenDuration(stats.pooInterval)}.`},
     {value:streak(events),label:'Days accident-free',aria:`${streak(events)} days accident-free`}
   ];
-  $('summary').innerHTML = metrics.map((metric,index) => `<div class="metric${index>0&&index<4?' decision-metric':''}" aria-label="${escapeHTML(metric.aria)}"><strong>${metric.value}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
+  $('summary').innerHTML = metrics.map((metric,index) => `<div class="metric${index>0&&index<4?' decision-metric':''}" aria-label="${escapeHTML(metric.aria+(metric.accident?' Latest event was an inside accident.':''))}"><strong>${metric.value}${metric.accident?'<i class="accident-example header-accident" aria-hidden="true" title="Latest event was an inside accident">!</i>':''}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
 }
 
 function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize, {distinctDays = false} = {}) {

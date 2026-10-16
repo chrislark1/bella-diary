@@ -142,6 +142,13 @@ async function decisionSupportChecks() {
   const header=frame.contentDocument.getElementById('summary'), decision=header.querySelectorAll('.metric');
   check(decision.length===5 && !header.textContent.includes("Today's wees") && !header.textContent.includes("Today's poos") && !header.textContent.includes("Today's meals") && decision[1].querySelector('strong').textContent==='15m','P: header has the five requested metrics, uses latest active wee and ignores tombstones');
   check(decision[2].querySelector('strong').textContent==='1h 15m' && decision[3].querySelector('strong').textContent==='15m' && decision[1].getAttribute('aria-label').includes('15 minutes') && decision[3].textContent.includes('Median 2h 00m'),'P: latest meal/poo values, median details and accessible descriptions render correctly');
+  const headerAccidents=fixture.map(event=>({...event,location:event.datetime.endsWith('12:00')||event.type==='meal'?'inside':'outside'}));
+  win.eval(`renderHeader(${JSON.stringify(headerAccidents)},new Date('2026-10-14T12:15:00'));`);
+  const accidentMetrics=header.querySelectorAll('.metric');
+  check(header.querySelectorAll('.header-accident').length===2&&[1,3].every(index=>accidentMetrics[index].querySelector('.header-accident')&&accidentMetrics[index].getAttribute('aria-label').includes('Latest event was an inside accident')&&win.getComputedStyle(accidentMetrics[index].querySelector('.header-accident')).position==='absolute')&&!accidentMetrics[2].querySelector('.header-accident'),'P: latest inside wee and poo get accessible accident badges outside normal flow without flagging meals');
+  const outdoorLatest=[...headerAccidents,{...fixture[0],id:'latest-out-wee',datetime:'2026-10-14T12:05'},{...fixture[4],id:'latest-out-poo',datetime:'2026-10-14T12:10'}];
+  win.eval(`renderHeader(${JSON.stringify(outdoorLatest)},new Date('2026-10-14T12:15:00'));`);
+  check(!header.querySelector('.header-accident')&&!header.querySelector('[aria-label*="Latest event was an inside accident"]'),'P: a later outdoor wee or poo clears the corresponding header accident cue');
   win.eval(`renderHeader(${JSON.stringify([...fixture,{...fixture[0],id:'future',datetime:'2026-10-14T13:00'}])},new Date('2026-10-14T12:15:00'));`);
   check(frame.contentDocument.querySelectorAll('#summary .metric')[1].querySelector('strong').textContent==='—','P: future-dated latest event displays a safe placeholder');
   win.eval(`renderHeader([],new Date('2026-10-14T12:15:00'));renderStats([]);`);
