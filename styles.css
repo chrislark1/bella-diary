@@ -73,6 +73,7 @@ header .page-tabs{justify-self:auto}
 .date-label{line-height:1.1}
 .day-summary{display:flex;align-items:center;gap:7px;margin-top:2px;color:var(--muted);font-size:8px;font-weight:400;line-height:1;font-variant-numeric:tabular-nums}
 .day-count{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
+.day-summary .accident-example{width:7px;height:7px;font-size:6px;line-height:7px}
 .day-summary .symbol{width:6.4px;height:6.4px}.day-summary .meal{width:8px;height:7.2px}
 @media(max-width:640px){.day-summary{gap:4px;margin-top:1px}}
 @media(max-width:640px){.desktop-only-metric{display:none}.mobile-only-metric{display:block}}
