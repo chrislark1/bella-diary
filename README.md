@@ -100,7 +100,7 @@ The diagnostic itself never syncs diary data: its cloud reads stay in memory and
 
 Manual browser check (real Google sign-in is not automated):
 
-1. Serve/deploy and reload online after shell cache v40 activates. Sign in to the actual PWA as Chris; open Cloud account and check **Household: Bella / Cloud access: Ready**.
+1. Serve/deploy and reload online after shell cache v43 activates. Sign in to the actual PWA as Chris; open Cloud account and check **Household: Bella / Cloud access: Ready**.
 2. Click **Run cloud connection test** once. Expect Authenticated access, Insert, Read, Update, Tombstone and Cleanup all **OK**. Verify your local diary is unchanged. Only a completed real-browser run proves live RLS connectivity.
 3. Repeat: each run creates a new disposable ID and removes only that row. If a stage fails, check membership/RLS/connectivity and inspect the reported diagnostic ID manually; never delete real diary rows to resolve a test.
 4. Go offline: the test button disables, the session stays visible, and local recording/editing/deleting still work. Reconnect and retry explicitly. Sign out: the diagnostic hides and local data remains.
@@ -116,7 +116,7 @@ Supabase setup for a new project (the existing project has already completed the
 
 1. In the SQL Editor as admin, run **only** `supabase/migrations/20261007010000_stage5a_server_version.sql` once. Do not rerun/rewrite Stage 4A. Existing cloud rows receive version 1. The existing trigger forces insert version 1, increments the old version on every update, regenerates `server_updated_at`, and rejects changes to `id`, `household_id` or `client_created_at`. No RLS policies or grants change.
 2. Run the complete `supabase/manual/verify-stage5a.sql` block. Expect the PASS notice for versions/timestamps/immutable fields; its disposable fixtures roll back. This admin test verifies the trigger, not RLS.
-3. Reload the PWA online after shell v40 activates, sign in, and run the Stage 4C connection test. It deliberately submits `server_version:999` on insert and both updates and accepts only returned versions **1, 2, 3**, while continuing to verify server timestamps and delete the disposable row. An unmigrated cloud database fails safely; the local diary remains available.
+3. Reload the PWA online after shell v43 activates, sign in, and run the Stage 4C connection test. It deliberately submits `server_version:999` on insert and both updates and accepts only returned versions **1, 2, 3**, while continuing to verify server timestamps and delete the disposable row. An unmigrated cloud database fails safely; the local diary remains available.
 4. Confirm the local diary automatically links to the discovered Bella household. Verify the binding survives reload, sign-out and offline entry recording. The browser test suite covers mismatch refusal; foreign-household RLS isolation remains the Stage 4A test's responsibility.
 
 Stage 5B updates an event only when its cloud version still equals the last accepted local `serverVersion`, then stores the returned next version. Cloud bigint versions are accepted locally only as positive safe integers; `null` means no accepted cloud version yet. Local edits and tombstones retain that value. JSON stays format version 2 with this extra event field; CSV stays unchanged.
@@ -156,7 +156,7 @@ Focused accident-gap calculation and SVG checks run with `node tests/accident-ga
 ## Statistics rules
 
 - **Wee accident gap:** elapsed time between consecutive active, non-demo indoor wee accidents. Outside wees and poo accidents do not interrupt it. Zero/negative gaps are excluded; there is no 24-hour upper cutoff. Its numeric and chart medians require three observations.
-- **Timing charts:** Accidents selects wee accident gaps only. Their red-orange `!` markers use a separate right-hand scale alongside ordinary series, or the normal left scale when selected alone. Ordered mode normalizes each series independently from shortest to longest; a lone observation stays at 50%. Accident trends use the completion calendar date and previous six dates, requiring three observations; ordinary trends retain the inclusive preceding 72 hours. Existing ordinary-point accident badges still identify intervals ending indoors.
+- **Timing charts:** Each series has an independent checkbox with its marker. Wee and Poo start selected; Meal → poo and Accidents start unchecked. Accidents shows wee accident gaps only. All selected series share the same duration scale on the left axis, including the red-orange `!` accident-gap markers. Deselect a series to remove it from the shared scale. Ordered mode normalizes each series independently from shortest to longest; a lone observation stays at 50%. Accident trends use the completion calendar date and previous six dates, requiring three observations; ordinary trends retain the inclusive preceding 72 hours. Existing ordinary-point accident badges still identify intervals ending indoors.
 - **Days tracked:** unique dates containing any event.
 - **Accident-free streak:** from the most recent recorded date, count consecutive calendar dates with entries and no inside wee/poo. A gap or accident ends it. Unrecorded days are not inferred.
 - **Frequency:** total events / tracked dates, requiring at least three tracked dates.
