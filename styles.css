@@ -127,6 +127,12 @@ header .page-tabs{justify-self:auto}
 .chart-median-label.chart-series-wee{color:var(--gold)}
 .chart-median-label.chart-series-poo{color:var(--brown)}
 .chart-median-label.chart-series-meal-poo{color:var(--meal)}
+.chart-point.chart-series-wee-accident,.chart-reference.chart-series-wee-accident,.chart-trend-point.chart-series-wee-accident{fill:#b65a3d}
+.chart-trend.chart-series-wee-accident,.chart-ordered.chart-series-wee-accident{stroke:#b65a3d}
+.chart-median-label.chart-series-wee-accident{color:#b65a3d}
+.chart-accident-symbol{fill:#fff;font-family:system-ui,sans-serif;font-weight:700;pointer-events:none}
+.chart-accident-axis .chart-axis{stroke:#b65a3d;opacity:.65}
+.chart-accident-axis .chart-axis-label,.chart-accident-axis .chart-axis-title{fill:#a34a32;font-size:10px}
 .chart-median-label rect{fill:#fffef9;fill-opacity:.96;stroke:currentColor;stroke-opacity:.35}
 .chart-median-label text{fill:currentColor;font:600 10px system-ui,sans-serif}
 .chart-median-leader{stroke:currentColor;stroke-width:1}
