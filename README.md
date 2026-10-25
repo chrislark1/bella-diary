@@ -102,7 +102,7 @@ The diagnostic itself never syncs diary data: its cloud reads stay in memory and
 
 Manual browser check (real Google sign-in is not automated):
 
-1. Serve/deploy and reload online after shell cache v48 activates. Sign in to the actual PWA as Chris; open Cloud account and check **Household: Bella / Cloud access: Ready**.
+1. Serve/deploy and reload online after shell cache v49 activates. Sign in to the actual PWA as Chris; open Cloud account and check **Household: Bella / Cloud access: Ready**.
 2. Click **Run cloud connection test** once. Expect Authenticated access, Insert, Read, Update, Tombstone and Cleanup all **OK**. Verify your local diary is unchanged. Only a completed real-browser run proves live RLS connectivity.
 3. Repeat: each run creates a new disposable ID and removes only that row. If a stage fails, check membership/RLS/connectivity and inspect the reported diagnostic ID manually; never delete real diary rows to resolve a test.
 4. Go offline: the test button disables, the session stays visible, and local recording/editing/deleting still work. Reconnect and retry explicitly. Sign out: the diagnostic hides and local data remains.
@@ -119,7 +119,7 @@ Supabase setup for a new project (the existing project has already completed the
 1. In the SQL Editor as admin, run **only** `supabase/migrations/20261007010000_stage5a_server_version.sql` once. Do not rerun/rewrite Stage 4A. Existing cloud rows receive version 1. The existing trigger forces insert version 1, increments the old version on every update, regenerates `server_updated_at`, and rejects changes to `id`, `household_id` or `client_created_at`. No RLS policies or grants change.
 2. Run the complete `supabase/manual/verify-stage5a.sql` block. Expect the PASS notice for versions/timestamps/immutable fields; its disposable fixtures roll back. This admin test verifies the trigger, not RLS.
 3. For Weight cloud sync, also run `supabase/migrations/20261025000000_weight_events.sql` after Stage 5A. It adds the nullable `weight_kg` column and permits Weight rows; local recording works without this cloud migration, but cloud sync requires it.
-4. Reload the PWA online after shell v48 activates, sign in, and run the Stage 4C connection test. It deliberately submits `server_version:999` on insert and both updates and accepts only returned versions **1, 2, 3**, while continuing to verify server timestamps and delete the disposable row. An unmigrated cloud database fails safely; the local diary remains available.
+4. Reload the PWA online after shell v49 activates, sign in, and run the Stage 4C connection test. It deliberately submits `server_version:999` on insert and both updates and accepts only returned versions **1, 2, 3**, while continuing to verify server timestamps and delete the disposable row. An unmigrated cloud database fails safely; the local diary remains available.
 5. Confirm the local diary automatically links to the discovered Bella household. Verify the binding survives reload, sign-out and offline entry recording. The browser test suite covers mismatch refusal; foreign-household RLS isolation remains the Stage 4A test's responsibility.
 
 Stage 5B updates an event only when its cloud version still equals the last accepted local `serverVersion`, then stores the returned next version. Cloud bigint versions are accepted locally only as positive safe integers; `null` means no accepted cloud version yet. Local edits and tombstones retain that value. JSON stays format version 2 with this extra event field; CSV stays unchanged.

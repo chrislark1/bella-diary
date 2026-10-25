@@ -135,6 +135,13 @@ header .page-tabs{justify-self:auto}
 .chart-median-label.chart-series-meal-poo{color:var(--meal)}
 .chart-point.chart-series-wee-accident,.chart-reference.chart-series-wee-accident,.chart-trend-point.chart-series-wee-accident{fill:#b65a3d}
 .chart-trend.chart-series-wee-accident,.chart-ordered.chart-series-wee-accident{stroke:#b65a3d}
+.chart-trend.chart-series-accident-rate{stroke:#b65a3d;stroke-width:2.2;opacity:.9;stroke-linejoin:miter}
+.chart-point.chart-series-accident-rate{fill:#b65a3d;opacity:.75}
+.chart-point.chart-series-accident-rate:hover,.chart-point.chart-series-accident-rate:focus{opacity:1}
+.chart-rate-point{fill:#b65a3d;pointer-events:none}
+.chart-accident-axis,.chart-accident-tick{stroke:#b65a3d;stroke-width:1}
+.chart-accident-axis-label,.chart-accident-axis-title,.chart-rate-left-title{fill:#b65a3d}
+.chart-rate-example{display:inline-block;width:12px;height:2px;background:#b65a3d;vertical-align:middle}
 .chart-median-label.chart-series-wee-accident{color:#b65a3d}
 .chart-accident-symbol{fill:#fff;font-family:system-ui,sans-serif;font-weight:700;pointer-events:none}
 .chart-median-label rect{fill:#fffef9;fill-opacity:.96;stroke:currentColor;stroke-opacity:.35}
@@ -147,7 +154,7 @@ header .page-tabs{justify-self:auto}
 .now-axis-label{z-index:2;top:-11px;padding:1px 4px;border-radius:4px;background:#b65a3d;color:white;font:9px system-ui,sans-serif;line-height:1.2;transform:translateX(-50%)!important;white-space:nowrap}
 .now-axis-label.near-tick{visibility:hidden}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-@media(max-width:640px){.chart-toolbar{align-items:flex-start}.chart-controls{width:100%;justify-content:space-between;gap:4px}.chart-controls button{padding-inline:6px;font-size:10px}.chart-legend{gap:9px;font-size:10px}.chart-axis-label,.chart-axis-title{font-size:11px}.chart-median-label text{font-size:9px}.now-axis-label{display:none}}
+@media(max-width:640px){.chart-toolbar{align-items:flex-start}.chart-controls{width:100%;justify-content:space-between;gap:4px}.chart-controls button{padding-inline:6px;font-size:10px}.chart-legend{gap:9px;font-size:10px}.chart-axis-label,.chart-axis-title{font-size:11px}.chart-accident-axis-label,.chart-accident-axis-title,.chart-rate-left-title{font-size:9px}.chart-median-label text{font-size:9px}.now-axis-label{display:none}}
 
 /* Low-frequency weight tracking, kept visually separate from toilet timing. */
 .weight-panel{margin-top:14px}

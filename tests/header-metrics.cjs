@@ -111,7 +111,7 @@ check('no recent accidents show zero and the mobile metric no longer displays an
   assert.doesNotMatch(metric(summary.innerHTML,'Since last accident')[2],/median/i);
 });
 check('existing minute refresh updates elapsed time and rolling rate without changing events',()=>{
-  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(\);\} else \{renderHeader\(activeEvents\(\),now\);updateNowMarker\(now\);\}\},60000\)/);
+  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);if\(activePage==='stats'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
   const boundary=event('ages-out','wee','2026-10-11T12:15','inside'),before=JSON.stringify([boundary]);
   const first=render(new Date('2026-10-14T12:15:00'),[boundary]);
   const elapsed1=metric(first,'Since last accident')[1];
