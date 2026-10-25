@@ -18,6 +18,15 @@ const minutesOf = event => Number(event.datetime.slice(11, 13)) * 60 + Number(ev
 // Daily marks and Timing Summary buckets share the same 00–24 plotting geometry.
 const position = event => minutesOf(event) / 1440 * 100;
 const accident = event => (event.type === 'wee' || event.type === 'poo') && event.location === 'inside';
+function accidentRate(events,now,windowHours) {
+  const end=now.getTime(),start=end-windowHours*3600000;
+  if (!Number.isFinite(end)||!Number.isFinite(windowHours)||windowHours<=0) return 0;
+  const count=events.filter(event=>{
+    const time=Date.parse(event.datetime);
+    return isActiveEvent(event)&&event.demo!==true&&accident(event)&&Number.isFinite(time)&&time>=start&&time<=end;
+  }).length;
+  return count/(windowHours/24);
+}
 const formatWeight = value => `${Number(value).toLocaleString('en-GB',{maximumFractionDigits:2})} kg`;
 const formatWeightRate = value => `${value >= 0 ? '+' : '-'}${Math.abs(value).toFixed(2)} kg/week`;
 const titleCase = text => text[0].toUpperCase() + text.slice(1);
@@ -253,7 +262,7 @@ function markHTML(event) {
 
 function renderHeader(events, now = new Date()) {
   events=events.filter(isToiletingEvent);
-  const stats = statistics(events);
+  const stats = statistics(events,now);
   const freeTime=accidentFreeTime(events,now);
   const latestByType=Object.fromEntries(TYPES.map(type=>[type,events.filter(event=>event.type===type).reduce((found,event)=>!found||Date.parse(event.datetime)>Date.parse(found.datetime)?event:found,null)]));
   const elapsedSince = latest => {
@@ -269,7 +278,7 @@ function renderHeader(events, now = new Date()) {
     {className:'decision-metric',value:compactDuration(since('wee')),accident:since('wee')!==null&&accident(latestByType.wee),description:'Since last wee',median:`Median ${compactDuration(stats.interval)}`,aria:`Time since last wee: ${spokenDuration(since('wee'))}. Median wee interval: ${spokenDuration(stats.interval)}.`},
     {className:'decision-metric desktop-only-metric',value:compactDuration(since('meal')),description:'Since last meal',median:`Meal → poo median ${compactDuration(stats.mealPoo)}`,aria:`Time since last meal: ${spokenDuration(since('meal'))}. Median meal to poo: ${spokenDuration(stats.mealPoo)}.`},
     {className:'decision-metric',value:compactDuration(since('poo')),accident:since('poo')!==null&&accident(latestByType.poo),description:'Since last poo',median:`Median ${compactDuration(stats.pooInterval)}`,aria:`Time since last poo: ${spokenDuration(since('poo'))}. Median poo interval: ${spokenDuration(stats.pooInterval)}.`},
-    {className:'decision-metric mobile-only-metric',value:compactDuration(accidentElapsed),description:'Since last accident',median:`Wee median ${compactDuration(stats.weeAccidentGap)}`,aria:`Time since last accident: ${spokenDuration(accidentElapsed)}. Median interval between wee accidents: ${spokenDuration(stats.weeAccidentGap)}.`},
+    {className:'decision-metric mobile-only-metric',value:compactDuration(accidentElapsed),description:'Since last accident',median:`${stats.accidentRate72h.toFixed(1)} / 24h`,aria:`Time since last accident: ${spokenDuration(accidentElapsed)}. Recent accident rate: ${stats.accidentRate72h.toFixed(1)} accidents per 24 hours over the last 72 hours.`},
     {value:freeTime.value,label:'Accident-free',aria:freeTime.aria}
   ];
   $('summary').innerHTML = metrics.map(metric => `<div class="metric${metric.className?' '+metric.className:''}" aria-label="${escapeHTML(metric.aria+(metric.accident?' Latest event was an inside accident.':''))}"><strong>${metric.value}${metric.accident?'<i class="accident-example header-accident" aria-hidden="true" title="Latest event was an inside accident">!</i>':''}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
@@ -416,7 +425,7 @@ function statistics(events,now=new Date()) {
     const recorded=events.filter(event=>event.type===type&&new Date(event.datetime).getTime()>=accidentCutoff&&new Date(event.datetime).getTime()<=now.getTime());
     return recorded.length ? `${Math.round(recorded.filter(accident).length/recorded.length*100)}%` : '—';
   };
-  return {frequency, accidentPercent, interval:median(observations.wee.map(item=>item.minutes)), pooInterval:median(observations.poo.map(item=>item.minutes)), weeAccidentGap:median(observations['wee-accident'].map(item=>item.minutes)), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(observations['meal-poo'].map(item=>item.minutes))};
+  return {frequency, accidentPercent, accidentRate72h:accidentRate(events,now,72), accidentRate7d:accidentRate(events,now,168), interval:median(observations.wee.map(item=>item.minutes)), pooInterval:median(observations.poo.map(item=>item.minutes)), weeAccidentGap:median(observations['wee-accident'].map(item=>item.minutes)), daytime:daytime.length >= MIN_SAMPLES ? Math.max(...daytime) : null, overnight:overnight.length >= MIN_SAMPLES ? Math.max(...overnight) : null, firstWee:median(firsts('wee')), firstPoo:median(firsts('poo')), mealTimes:mealTimes.map(median), mealWee:median(afterMeal('wee',6)), mealPoo:median(observations['meal-poo'].map(item=>item.minutes))};
 }
 
 function renderStats(events,now=new Date()) {
@@ -425,7 +434,7 @@ function renderStats(events,now=new Date()) {
   const elapsedDays=weights.previous?(Date.parse(weights.latest.datetime)-Date.parse(weights.previous.datetime))/86400000:0;
   const weightRate=elapsedDays>0?formatWeightRate((weights.latest.weightKg-weights.previous.weightKg)/elapsedDays*7):'—';
   const groups = [
-    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
+    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accidents / 24h (last 72h)',s.accidentRate72h.toFixed(1)],['Accidents / 24h (last 7d)',s.accidentRate7d.toFixed(1)],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
     ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Median wee accident gap',compactDuration(s.weeAccidentGap)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
     ['Weight', [['Latest weight',weights.latest?formatWeight(weights.latest.weightKg):'—'],['Average growth rate',weightRate]]]
   ];
@@ -755,7 +764,7 @@ function connectEvents() {
   setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render();} else {renderHeader(activeEvents(),now);updateNowMarker(now);}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its trend uses a trailing seven-calendar-day median (the completion day and previous six dates), requiring three observations; ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Recent accident rates use rolling trailing 72-hour and 7-day windows, normalized to accidents per 24 hours. They update as events age out. The median wee accident gap is a separate descriptive metric.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its trend uses a trailing seven-calendar-day median (the completion day and previous six dates), requiring three observations; ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}
