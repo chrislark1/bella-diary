@@ -2,12 +2,14 @@
 
 // Focused checks for the responsive headline metrics; no browser or diary DB.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
-const summary={innerHTML:''},statsElement={innerHTML:''};
+const summary={innerHTML:''},statsElement={innerHTML:''},weightPlot={innerHTML:'',clientWidth:640},weightDetail={textContent:''};
+const timingPanel={hidden:false},weightPanel={hidden:true},chartTabs=[{dataset:{statsChart:'timing'},attrs:{},setAttribute(key,value){this.attrs[key]=value;}},{dataset:{statsChart:'weight'},attrs:{},setAttribute(key,value){this.attrs[key]=value;}}];
 const app=vm.createContext({});
 const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../styles.css'),'utf8');
+const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
 vm.runInContext(source,app);
-app.document={getElementById:id=>id==='summary'?summary:statsElement};
+app.document={getElementById:id=>({summary,stats:statsElement,'weight-chart-plot':weightPlot,'weight-point-detail':weightDetail,'timing-chart-panel':timingPanel,'weight-chart-panel':weightPanel})[id]||{innerHTML:'',textContent:''},querySelectorAll:()=>chartTabs};
 let passed=0;
 const check=(name,test)=>{test();passed++;console.log('PASS '+name);};
 const event=(id,type,datetime,location='outside')=>({id,type,datetime,location,deletedAt:null});
@@ -51,6 +53,34 @@ check('wee, poo and accident median copy uses the shared Stats statistics',()=>{
   assert.equal(metric(html,'Since last poo')[2],`Median ${vm.runInContext(`compactDuration(${shared.pooInterval})`,app)}`);
   assert.equal(metric(html,'Since last accident')[2],`Wee median ${vm.runInContext(`compactDuration(${shared.weeAccidentGap})`,app)}`);
   assert.match(statsElement.innerHTML,/Median wee accident gap<\/span><strong>2d 0h/);
+});
+check('After a meal is removed and Weight stats show latest value and date-adjusted growth rate',()=>{
+  app.fixture=events.filter(event=>event.type!=='weight').concat([
+    {id:'weight-previous',type:'weight',datetime:'2026-10-12T09:30',weightKg:7.2,deletedAt:null},
+    {id:'weight-latest',type:'weight',datetime:'2026-10-14T09:30',weightKg:7.45,deletedAt:null}
+  ]);
+  vm.runInContext('renderStats(fixture,new Date("2026-10-14T12:15:00"))',app);
+  assert.match(statsElement.innerHTML,/<h3>Weight<\/h3>/);
+  assert.match(statsElement.innerHTML,/Latest weight<\/span><strong>7\.45 kg/);
+  assert.match(statsElement.innerHTML,/Average growth rate<\/span><strong>\+0\.88 kg\/week/);
+  assert.doesNotMatch(statsElement.innerHTML,/After a meal|Median time to wee|Median time to poo/);
+  assert.doesNotMatch(statsElement.innerHTML,/Previous weight|Last weighed/);
+});
+check('weight chart uses whole-kilogram y-axis labels',()=>{
+  vm.runInContext('renderWeightChart([{id:"a",datetime:"2026-10-14T09:30",weightKg:5.78},{id:"b",datetime:"2026-10-19T09:30",weightKg:6.98},{id:"c",datetime:"2026-10-25T09:30",weightKg:8.02}])',app);
+  const labels=[...weightPlot.innerHTML.matchAll(/class="weight-axis-label"[^>]*>([^<]+)</g)].map(match=>match[1]);
+  assert.deepEqual(labels,['5','7','9','14 Oct','19 Oct','25 Oct']);
+  assert.ok(labels.slice(0,3).every(label=>Number.isInteger(Number(label))));
+});
+check('Weight is an accessible alternate chart tab beside Timing observations',()=>{
+  assert.match(html,/<div id="stats-chart-tabs"[^>]*role="tablist"[^>]*aria-label="Statistics chart"/);
+  assert.match(html,/<button id="weight-chart-tab"[^>]*role="tab"[^>]*aria-controls="weight-chart-panel"/);
+  assert.match(html,/<div id="weight-chart-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="weight-chart-tab"[^>]*hidden/);
+  vm.runInContext('statsChartMode="weight";renderStatsChartMode()',app);
+  assert.equal(timingPanel.hidden,true);assert.equal(weightPanel.hidden,false);
+  assert.equal(chartTabs[0].attrs['aria-selected'],'false');assert.equal(chartTabs[1].attrs['aria-selected'],'true');
+  vm.runInContext('statsChartMode="timing";renderStatsChartMode()',app);
+  assert.equal(timingPanel.hidden,false);assert.equal(weightPanel.hidden,true);
 });
 check('insufficient shared accident samples render a dash',()=>{
   app.fixture=events.slice(0,3);

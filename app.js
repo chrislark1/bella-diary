@@ -3,6 +3,8 @@
 // One store, one filter, one editor. Datetimes are local wall-clock ISO strings.
 const WINDOW_KEY = 'bellaDiary.aggregateWindow';
 const TYPES = ['wee', 'poo', 'meal'];
+const EVENT_TYPES = [...TYPES,'weight'];
+const isToiletingEvent = event => TYPES.includes(event.type);
 const CONSISTENCIES = ['Firm', 'Normal', 'Soft', 'Diarrhoea'];
 const MIN_SAMPLES = 3;
 const DAY_START = 6 * 60, DAY_END = 22 * 60;
@@ -15,7 +17,9 @@ const dateOf = event => event.datetime.slice(0, 10);
 const minutesOf = event => Number(event.datetime.slice(11, 13)) * 60 + Number(event.datetime.slice(14, 16));
 // Daily marks and Timing Summary buckets share the same 00–24 plotting geometry.
 const position = event => minutesOf(event) / 1440 * 100;
-const accident = event => event.type !== 'meal' && event.location === 'inside';
+const accident = event => (event.type === 'wee' || event.type === 'poo') && event.location === 'inside';
+const formatWeight = value => `${Number(value).toLocaleString('en-GB',{maximumFractionDigits:2})} kg`;
+const formatWeightRate = value => `${value >= 0 ? '+' : '-'}${Math.abs(value).toFixed(2)} kg/week`;
 const titleCase = text => text[0].toUpperCase() + text.slice(1);
 const escapeHTML = text => String(text ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
 const shortDate = date => new Date(`${date}T12:00`).toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'});
@@ -53,7 +57,7 @@ function validateEvents(input) {
   if (!Array.isArray(input)) throw new Error('The file must contain an events array.');
   const seen = new Set();
   return input.map(raw => {
-    if (!raw || typeof raw !== 'object' || !TYPES.includes(raw.type) || typeof raw.id !== 'string' || !raw.id || raw.id.length > 200 || seen.has(raw.id)) throw new Error('An event has an invalid type or a missing/duplicate ID.');
+    if (!raw || typeof raw !== 'object' || !EVENT_TYPES.includes(raw.type) || typeof raw.id !== 'string' || !raw.id || raw.id.length > 200 || seen.has(raw.id)) throw new Error('An event has an invalid type or a missing/duplicate ID.');
     seen.add(raw.id);
     if (typeof raw.datetime !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?$/.test(raw.datetime)) throw new Error('An event has an invalid date/time.');
     // Check calendar fields before Date can silently roll an invalid date forward.
@@ -66,7 +70,11 @@ function validateEvents(input) {
     const event = {id:raw.id, type:raw.type, datetime, note:''};
     const text = (key, limit) => {if (raw[key] == null) return ''; if (typeof raw[key] !== 'string' || raw[key].length > limit) throw new Error(`Invalid ${key} field.`); return raw[key];};
     event.note = text('note', 2000);
-    if (raw.type === 'meal') {event.mealFood = text('mealFood',200); event.mealAmount = text('mealAmount',100);}
+    if (raw.type === 'weight') {
+      if (typeof raw.weightKg !== 'number' || !Number.isFinite(raw.weightKg) || raw.weightKg <= 0 || raw.weightKg > 100) throw new Error('Weight must be a number greater than 0 and no more than 100 kg.');
+      event.weightKg = raw.weightKg;
+    }
+    else if (raw.type === 'meal') {event.mealFood = text('mealFood',200); event.mealAmount = text('mealAmount',100);}
     else {
       if (!['inside','outside'].includes(raw.location)) throw new Error('An event has an invalid location.');
       event.location = raw.location;
@@ -94,7 +102,7 @@ function validateEvents(input) {
 
 let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
-let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, hasBinSizePreference = false, timingView = 'over-time', editingId = null, messageTimer;
+let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, hasBinSizePreference = false, timingView = 'over-time', statsChartMode = 'timing', editingId = null, messageTimer;
 let timingMetrics=new Set(['wee','poo']);
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
@@ -214,7 +222,7 @@ function filteredEvents(events = activeEvents()) {
 
 function accidentFreeTime(events,now=new Date()) {
   let first=null,lastAccident=null;
-  for (const event of events) {
+  for (const event of events.filter(isToiletingEvent)) {
     const time=Date.parse(event.datetime);
     if (!Number.isFinite(time)||time>now.getTime()) continue;
     first=Math.min(first??time,time);
@@ -227,6 +235,7 @@ function accidentFreeTime(events,now=new Date()) {
 }
 
 function details(event) {
+  if (event.type === 'weight') return formatWeight(event.weightKg);
   if (event.type === 'meal') return [event.mealFood, event.mealAmount].filter(Boolean).join(' · ') || 'Meal';
   return [accident(event) ? 'Inside accident' : 'Outside', event.pooConsistency].filter(Boolean).join(' · ');
 }
@@ -243,6 +252,7 @@ function markHTML(event) {
 }
 
 function renderHeader(events, now = new Date()) {
+  events=events.filter(isToiletingEvent);
   const stats = statistics(events);
   const freeTime=accidentFreeTime(events,now);
   const latestByType=Object.fromEntries(TYPES.map(type=>[type,events.filter(event=>event.type===type).reduce((found,event)=>!found||Date.parse(event.datetime)>Date.parse(found.datetime)?event:found,null)]));
@@ -279,6 +289,7 @@ function defaultBinSize(trackedDays) {return trackedDays<=5?120:trackedDays<=8?9
 function bucketTime(minute) {return `${pad(Math.floor(minute/60))}:${pad(minute%60)}`;}
 
 function renderAggregate(events, now = new Date()) {
+  events=events.filter(isToiletingEvent);
   const today = localDate(now);
   const cutoff = activeWindow === 'all' ? null : (() => {const day = new Date(`${today}T12:00`); day.setDate(day.getDate() - Number(activeWindow) + 1); return localDate(day);})();
   const windowEvents = activeWindow === 'all' ? events : events.filter(event => dateOf(event) >= cutoff && dateOf(event) <= today);
@@ -313,6 +324,7 @@ function updateNowMarker(now = new Date()) {
 }
 
 function renderTimeline(events, allEvents, now = new Date()) {
+  events=events.filter(isToiletingEvent);allEvents=allEvents.filter(isToiletingEvent);
   const dates = [...new Set(allEvents.map(dateOf))].sort().reverse();
   const groups = new Map(dates.map(date => [date,[]]));
   const totals = new Map(dates.map(date => [date,{...Object.fromEntries(TYPES.map(type => [type,0])),accidents:0}]));
@@ -329,7 +341,7 @@ function renderTimeline(events, allEvents, now = new Date()) {
 }
 
 function renderTable(events) {
-  $('data').innerHTML = events.length ? `<table><thead><tr><th>Date / time</th><th>Type</th><th>Details</th><th class="note-column">Note</th><th><span class="muted">Edit</span></th></tr></thead><tbody>${events.map(event => `<tr data-id="${escapeHTML(event.id)}"><td>${shortDate(dateOf(event))}<br>${event.datetime.slice(11,16)}</td><td><span class="symbol ${event.type}" aria-hidden="true"></span>${titleCase(event.type)}</td><td>${escapeHTML(details(event))}${accident(event) ? ' <span class="accident-example" aria-label="Inside accident">!</span>' : ''}<span class="table-note-inline">${escapeHTML(event.note)}</span></td><td class="note-column">${escapeHTML(event.note)}</td><td><button data-id="${escapeHTML(event.id)}" aria-label="Edit ${event.type} on ${escapeHTML(shortDate(dateOf(event)))} at ${event.datetime.slice(11,16)}">Edit</button></td></tr>`).join('')}</tbody></table>` : '<p class="empty">No events to show. Try another filter or add an entry.</p>';
+  $('data').innerHTML = events.length ? `<table><thead><tr><th>Date / time</th><th>Type</th><th>Details</th><th class="note-column">Note</th><th><span class="muted">Edit</span></th></tr></thead><tbody>${events.map(event => `<tr data-id="${escapeHTML(event.id)}"><td>${shortDate(dateOf(event))}<br>${event.datetime.slice(11,16)}</td><td>${event.type==='weight'?'<span class="weight-table-symbol" aria-hidden="true">kg</span>':'<span class="symbol '+event.type+'" aria-hidden="true"></span>'}${titleCase(event.type)}</td><td>${escapeHTML(details(event))}${accident(event) ? ' <span class="accident-example" aria-label="Inside accident">!</span>' : ''}<span class="table-note-inline">${escapeHTML(event.note)}</span></td><td class="note-column">${escapeHTML(event.note)}</td><td><button data-id="${escapeHTML(event.id)}" aria-label="Edit ${event.type} on ${escapeHTML(shortDate(dateOf(event)))} at ${event.datetime.slice(11,16)}">Edit</button></td></tr>`).join('')}</tbody></table>` : '<p class="empty">No events to show. Try another filter or add an entry.</p>';
 }
 
 function intervalObservations(events, type) {
@@ -381,6 +393,7 @@ function trailingMedianObservations(series,calendarDays=null) {
 function percentileRank(index,count) {return count===1?50:index/(count-1)*100;}
 
 function statistics(events,now=new Date()) {
+  events=events.filter(isToiletingEvent);
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
   const dates = [...new Set(events.map(dateOf))];
   const observations=timingObservations(events);
@@ -408,12 +421,55 @@ function statistics(events,now=new Date()) {
 
 function renderStats(events,now=new Date()) {
   const s = statistics(events,now);
+  const weights=weightSummary(events);
+  const elapsedDays=weights.previous?(Date.parse(weights.latest.datetime)-Date.parse(weights.previous.datetime))/86400000:0;
+  const weightRate=elapsedDays>0?formatWeightRate((weights.latest.weightKg-weights.previous.weightKg)/elapsedDays*7):'—';
   const groups = [
     ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
     ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Median wee accident gap',compactDuration(s.weeAccidentGap)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
-    ['After a meal', [['Median time to wee',duration(s.mealWee)],['Median time to poo',duration(s.mealPoo)]]]
+    ['Weight', [['Latest weight',weights.latest?formatWeight(weights.latest.weightKg):'—'],['Average growth rate',weightRate]]]
   ];
   $('stats').innerHTML = groups.map(([heading,rows]) => `<div><h3>${heading}</h3>${rows.map(([label,value]) => `<div class="stat-line"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`).join('');
+  renderWeightChart(weights.records);
+}
+
+function weightSummary(events) {
+  const records=events.filter(event=>event.type==='weight'&&isActiveEvent(event)&&event.demo!==true).slice().sort((a,b)=>a.datetime.localeCompare(b.datetime));
+  const latest=records.at(-1)||null,previous=records.at(-2)||null;
+  return {records,latest,previous};
+}
+
+function renderStatsChartMode() {
+  const timing=statsChartMode==='timing';
+  $('timing-chart-panel').hidden=!timing;
+  $('weight-chart-panel').hidden=timing;
+  document.querySelectorAll('[data-stats-chart]').forEach(button=>{const selected=button.dataset.statsChart===statsChartMode;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;});
+}
+
+function renderWeightChart(records) {
+  const target=$('weight-chart-plot'), detail=$('weight-point-detail');
+  if (!target) return;
+  if (!records.length) {target.innerHTML='<p class="empty">No weights recorded yet.</p>';if(detail)detail.textContent='';return;}
+  const W=Math.max(320,target.clientWidth||640),H=260,left=58,right=18,top=18,bottom=42,plotW=W-left-right,plotH=H-top-bottom;
+  const values=records.map(event=>event.weightKg),min=Math.min(...values),max=Math.max(...values),padding=min===max?Math.max(.25,min*.05):(max-min)*.12;
+  let low=Math.max(0,Math.floor(min)),high=Math.ceil(max);
+  if(high-low<2){low=Math.max(0,low-1);high=Math.max(high,low+2);}
+  const range=high-low||1;
+  const firstTime=Date.parse(records[0].datetime),lastTime=Date.parse(records.at(-1).datetime),timeRange=lastTime-firstTime;
+  const x=index=>timeRange===0?left+plotW/2:left+(Date.parse(records[index].datetime)-firstTime)/timeRange*plotW;
+  const y=value=>top+(high-value)/range*plotH;
+  const ticks=[...new Set([low,Math.round((low+high)/2),high])];
+  const grid=ticks.map(value=>`<line class="weight-grid" x1="${left}" x2="${W-right}" y1="${y(value)}" y2="${y(value)}"/><text class="weight-axis-label" x="${left-8}" y="${y(value)+4}" text-anchor="end">${value}</text>`).join('');
+  const dateLabel=date=>new Date(`${date}T12:00`).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const dates=[...new Set([0,Math.floor((records.length-1)/2),records.length-1])];
+  const xLabels=dates.map(index=>`<text class="weight-axis-label" x="${x(index)}" y="${H-12}" text-anchor="middle">${dateLabel(dateOf(records[index]))}</text>`).join('');
+  const points=records.map((event,index)=>{
+    const date=dateOf(event),value=formatWeight(event.weightKg),fullDate=new Date(`${date}T12:00`).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}),label=`Bella's weight, ${fullDate}: ${value.replace(' kg','')} kilograms`,detailText=`${fullDate} · ${value}`;
+    return `<g class="weight-point" transform="translate(${x(index)} ${y(event.weightKg)})" tabindex="0" role="button" aria-label="${escapeHTML(label)}" data-point-detail="${escapeHTML(detailText)}"><title>${escapeHTML(label)}</title><circle class="weight-hit-area" r="10"/><circle class="weight-point-dot" r="4"/></g>`;
+  });
+  const line=records.length>1?`<path class="weight-line" d="${records.map((event,index)=>`${index?'L':'M'} ${x(index)} ${y(event.weightKg)}`).join(' ')}"/>`:'';
+  target.innerHTML=`<svg class="weight-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="Bella's weight trend, kilograms by weighing date"><g>${grid}<line class="weight-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="weight-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/><text class="weight-axis-title" x="14" y="${top+plotH/2}" text-anchor="middle" transform="rotate(-90 14 ${top+plotH/2})">Weight (kg)</text>${xLabels}${line}${points.join('')}</g></svg>`;
+  if(detail)detail.textContent='Hover over, tap or focus a point to inspect that weighing.';
 }
 
 const CHART_SERIES = {
@@ -548,7 +604,7 @@ function render() {
   $('diary-page').hidden = activePage !== 'diary'; $('stats-page').hidden = activePage !== 'stats';
   if (activePage==='stats') renderTimingChart(allEvents);
   document.querySelectorAll('[data-page]').forEach(button => {const selected = button.dataset.page === activePage; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
-  document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter)));
+  document.querySelectorAll('[data-filter]').forEach(button => {button.hidden=button.dataset.filter==='weight'&&activeTab!=='data';button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter));});
   document.querySelectorAll('[data-tab]').forEach(button => {const selected = button.dataset.tab === activeTab; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
 }
 
@@ -562,7 +618,8 @@ async function quickAdd(type, location = 'outside') {
 
 function editorFields() {
   const type = $('event-form').elements.type.value;
-  $('location-field').hidden = type === 'meal'; $('consistency-field').hidden = type !== 'poo'; $('meal-fields').hidden = type !== 'meal';
+  $('location-field').hidden = type === 'meal' || type === 'weight'; $('consistency-field').hidden = type !== 'poo'; $('meal-fields').hidden = type !== 'meal';
+  $('weight-field').hidden = type !== 'weight'; $('event-form').elements.weightKg.required = type === 'weight';
 }
 
 function openEditor(id = null) {
@@ -571,7 +628,7 @@ function openEditor(id = null) {
   editingId = id;
   const form = $('event-form'); form.reset();
   const data = event || {type:'wee',datetime:localDatetime(new Date()), location:'outside',pooConsistency:'Normal'};
-  for (const key of ['type','location','pooConsistency','mealFood','mealAmount','note']) if (data[key] != null) form.elements[key].value = data[key];
+  for (const key of ['type','location','pooConsistency','mealFood','mealAmount','weightKg','note']) if (data[key] != null) form.elements[key].value = data[key];
   form.elements.date.value = dateOf(data); form.elements.time.value = data.datetime.slice(11,16);
   $('editor-title').textContent = id ? 'Edit entry' : 'Custom entry'; $('delete-event').hidden = !id;
   editorFields(); $('editor').showModal();
@@ -581,7 +638,8 @@ async function saveEditor(event) {
   event.preventDefault();
   const form = $('event-form'), value = key => form.elements[key].value;
   const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note'), ...eventMetadata()};
-  if (entry.type === 'meal') {entry.mealFood = value('mealFood'); entry.mealAmount = value('mealAmount');}
+  if (entry.type === 'weight') entry.weightKg = Number(value('weightKg'));
+  else if (entry.type === 'meal') {entry.mealFood = value('mealFood'); entry.mealAmount = value('mealAmount');}
   else {entry.location = value('location'); if (entry.type === 'poo') entry.pooConsistency = value('pooConsistency');}
   // Preserve existing creation metadata and accepted sync baseline.
   const existing = editingId ? activeEvents().find(event => event.id === editingId) : null;
@@ -601,7 +659,7 @@ function download(filename,content,type) {
 function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),demoCleared:store.demoCleared,events:store.events,...(store.syncConflicts.length ? {syncConflicts:store.syncConflicts} : {})},null,2),'application/json');}
 
 function exportCSV() {
-  const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','note'];
+  const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','weightKg','note'];
   // Guard against spreadsheet formula execution while retaining a readable text value.
   const cell = value => {let s = String(value ?? ''); if (/^[\s]*[=+@-]/.test(s)) s = "'"+s; return '"'+s.replace(/"/g,'""')+'"';};
   const lines = [keys.join(','), ...[...activeEvents()].sort((a,b) => b.datetime.localeCompare(a.datetime)).map(event => keys.map(key => cell(key === 'date' ? dateOf(event) : key === 'time' ? event.datetime.slice(11,16) : event[key])).join(','))];
@@ -644,6 +702,16 @@ function connectEvents() {
     const view=event.target.closest('[data-chart-view]');
     if (view) {timingView=view.dataset.chartView;renderTimingChart(activeEvents());}
   });
+  $('stats-chart-tabs').addEventListener('click',event=>{
+    const tab=event.target.closest('[data-stats-chart]');
+    if(tab){statsChartMode=tab.dataset.statsChart;renderStatsChartMode();if(statsChartMode==='timing')renderTimingChart(activeEvents());}
+  });
+  $('stats-chart-tabs').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==='Home'?'timing':event.key==='End'?'weight':statsChartMode==='timing'?'weight':'timing';
+    statsChartMode=next;renderStatsChartMode();if(next==='timing')renderTimingChart(activeEvents());$(`[data-stats-chart="${next}"]`).focus();
+  });
   $('timing-chart-controls').addEventListener('change',event=>{
     const input=event.target.closest('[data-chart-filter]');
     if (!input) return;
@@ -654,6 +722,10 @@ function connectEvents() {
   $('timing-chart-plot').addEventListener('focusin',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('timing-point-detail').textContent=point.dataset.pointDetail;});
   $('timing-chart-plot').addEventListener('mouseover',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('timing-point-detail').textContent=point.dataset.pointDetail;});
   $('timing-chart-plot').addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-point-detail]')){event.preventDefault();$('timing-point-detail').textContent=event.target.dataset.pointDetail;}});
+  $('weight-chart-plot').addEventListener('click',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('weight-point-detail').textContent=point.dataset.pointDetail;});
+  $('weight-chart-plot').addEventListener('focusin',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('weight-point-detail').textContent=point.dataset.pointDetail;});
+  $('weight-chart-plot').addEventListener('mouseover',event=>{const point=event.target.closest('[data-point-detail]');if(point)$('weight-point-detail').textContent=point.dataset.pointDetail;});
+  $('weight-chart-plot').addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-point-detail]')){event.preventDefault();$('weight-point-detail').textContent=event.target.dataset.pointDetail;}});
   $('more-menu').addEventListener('click',event => {if (event.target.closest('button') && !event.target.closest('#cloud-account')) setTimeout(() => {$('more-menu').open = false;},0);});
   document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click',() => quickAdd(button.dataset.add,button.dataset.location || 'outside')));
   $('aggregate').addEventListener('click',event => {const bucket = event.target.closest('[data-bucket-label]'); if (bucket) notify(bucket.dataset.bucketLabel);});
@@ -664,8 +736,8 @@ function connectEvents() {
   $('custom').addEventListener('click',() => openEditor());
   $('filters').addEventListener('click',event => {const button = event.target.closest('[data-filter]'); if (button) {activeFilter = button.dataset.filter; render();}});
   document.querySelectorAll('[data-tab]').forEach(button => {
-    button.addEventListener('click',() => {activeTab = button.dataset.tab; render();});
-    button.addEventListener('keydown',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault(); activeTab = event.key === 'Home' ? 'timeline' : event.key === 'End' ? 'data' : activeTab === 'timeline' ? 'data' : 'timeline'; render(); $(`${activeTab}-tab`).focus();}});
+    button.addEventListener('click',() => {activeTab = button.dataset.tab;if(activeTab==='timeline'&&activeFilter==='weight')activeFilter='all';render();});
+    button.addEventListener('keydown',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault(); activeTab = event.key === 'Home' ? 'timeline' : event.key === 'End' ? 'data' : activeTab === 'timeline' ? 'data' : 'timeline';if(activeTab==='timeline'&&activeFilter==='weight')activeFilter='all';render(); $(`${activeTab}-tab`).focus();}});
   });
   for (const id of ['timeline','data']) $(id).addEventListener('click',event => {const entry = event.target.closest('[data-id]'); if (entry) openEditor(entry.dataset.id);});
   $('event-form').elements.type.addEventListener('change',editorFields);

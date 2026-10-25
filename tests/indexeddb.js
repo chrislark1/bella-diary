@@ -145,7 +145,46 @@ async function run() {
   check(same(state(frame),seeded),'B: reload preserves empty initialization');
   check(!frame.contentDocument.getElementById('demo-label') && !frame.contentDocument.getElementById('clear-demo'),'B: user-facing demo controls are removed');
   check(localStorage.getItem(KEY)===null,'B: fresh IndexedDB diary creates no legacy localStorage copy');
-  starting[1].remove();
+  const today=frame.contentWindow.eval('localDate(new Date())');
+  const pastDate=days=>frame.contentWindow.eval(`(()=>{const d=new Date('${today}T12:00');d.setDate(d.getDate()-${days});return localDate(d);})()`);
+  const addWeight=async(date,value)=>{await click(frame,'#custom');const f=frame.contentDocument.getElementById('event-form'),type=f.elements.type;type.value='weight';type.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));f.elements.date.value=date;f.elements.time.value='09:30';f.elements.weightKg.value=String(value);await click(frame,'#event-form button[type="submit"]');return state(frame).events.at(-1);};
+  check(!frame.contentDocument.querySelector('[data-add="weight"]')&&Array.from(frame.contentDocument.querySelectorAll('#event-form [name="type"] option')).some(option=>option.value==='weight'),'B: Weight is a Custom entry type with no quick-add control');
+  await click(frame,'#custom');let weightForm=frame.contentDocument.getElementById('event-form');weightForm.elements.type.value='weight';weightForm.elements.type.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
+  check(!frame.contentDocument.getElementById('weight-field').hidden&&frame.contentDocument.getElementById('weight-field').querySelector('input').required&&frame.contentDocument.getElementById('location-field').hidden&&frame.contentDocument.getElementById('consistency-field').hidden&&frame.contentDocument.getElementById('meal-fields').hidden,'B: Weight editor requires kg and hides irrelevant event fields');frame.contentDocument.getElementById('cancel-editor').click();
+  const firstWeight=await addWeight(pastDate(14),6.4),secondWeight=await addWeight(pastDate(7),7.2),latestWeight=await addWeight(today,7.45);
+  check(firstWeight.type==='weight'&&firstWeight.weightKg===6.4&&validMetadata(firstWeight)&&(await databaseContents()).events.some(event=>event.id===firstWeight.id&&event.weightKg===6.4),'B: decimal kg values and normal event metadata persist exactly in IndexedDB');
+  check(frame.contentDocument.querySelectorAll('#timeline .time-row').length===0&&frame.contentDocument.querySelectorAll('#aggregate .aggregate-row').length===4&&frame.contentDocument.getElementById('aggregate-count').textContent.includes('0 events'),'B: Weight creates no toileting timeline dates or Timing Summary counts');
+  check(frame.contentWindow.eval(`(()=>{const before=statistics([]);const mixed=statistics(${JSON.stringify([firstWeight,secondWeight,latestWeight])});return before.interval===mixed.interval&&before.pooInterval===mixed.pooInterval&&before.weeAccidentGap===mixed.weeAccidentGap&&mixed.frequency('wee')==='—'&&mixed.frequency('poo')==='—'&&mixed.frequency('meal')==='—'&&accidentFreeTime(${JSON.stringify([firstWeight,secondWeight,latestWeight])}).value==='—';})()`),'B: Weight stays out of toileting frequencies, intervals and accident metrics');
+  const weightValidBase=latestWeight;
+  for(const invalidValue of [0,-1,101,'7.45']){const invalid={...weightValidBase,id:`invalid-${invalidValue}`,weightKg:invalidValue};const rejected=frame.contentWindow.eval(`(()=>{try{validateEvents([${JSON.stringify(invalid)}]);return false;}catch{return true;}})()`);check(rejected,`B: invalid weight ${invalidValue} is rejected`);}
+  await reload(frame);
+  check(same(frame.contentWindow.eval('weightSummary(activeEvents())').records.map(event=>event.id),[firstWeight.id,secondWeight.id,latestWeight.id])&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Stats chart persists weights in chronological date order');
+  const statsWeightText=frame.contentDocument.getElementById('stats').textContent;
+  check(statsWeightText.includes('Latest weight7.45 kg')&&statsWeightText.includes('Average growth rate+0.25 kg/week')&&!statsWeightText.includes('After a meal'),'B: numeric Statistics replaces After a meal with latest weight and growth rate');
+  check(!frame.contentDocument.getElementById('timing-chart-panel').hidden&&frame.contentDocument.getElementById('weight-chart-panel').hidden&&frame.contentDocument.getElementById('timing-chart-tab').getAttribute('aria-selected')==='true','B: timing observations is the default Stats chart tab');
+  await click(frame,'#weight-chart-tab');
+  check(frame.contentDocument.getElementById('timing-chart-panel').hidden&&!frame.contentDocument.getElementById('weight-chart-panel').hidden&&frame.contentDocument.getElementById('weight-chart-tab').getAttribute('aria-selected')==='true'&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Weight tab replaces the timing chart and shows its trend');
+  await click(frame,'#timing-chart-tab');
+  frame.contentWindow.eval(`renderWeightChart([weightSummary(activeEvents()).latest])`);
+  check(frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===1&&frame.contentDocument.querySelector('#weight-chart-plot .weight-point').getAttribute('aria-label').includes('7.45 kilograms'),'B: a single weighing renders one accessible chart point');
+  frame.contentWindow.eval('render()');await click(frame,'#data-tab');
+  check(!frame.contentDocument.querySelector('[data-filter="weight"]').hidden,'B: Weight filter appears in Data only');
+  await click(frame,'[data-filter="weight"]');
+  check(frame.contentDocument.querySelectorAll('#data tbody tr').length===3&&frame.contentDocument.querySelector('#data tbody tr td:nth-child(3)').textContent.includes('7.45 kg'),'B: Data filter and details show weight records');
+  await click(frame,`#data [data-id="${firstWeight.id}"]`);weightForm=frame.contentDocument.getElementById('event-form');weightForm.elements.weightKg.value='6.5';await click(frame,'#event-form button[type="submit"]');
+  check(state(frame).events.find(event=>event.id===firstWeight.id).weightKg===6.5,'B: Weight entries use the shared edit workflow');
+  await click(frame,`#data [data-id="${secondWeight.id}"]`);await click(frame,'#delete-event');
+  check(state(frame).events.find(event=>event.id===secondWeight.id).deletedAt!==null&&!frame.contentDocument.querySelector(`#data [data-id="${secondWeight.id}"]`),'B: Weight deletion creates a hidden tombstone');
+  const weightBackup=state(frame),weightDownloads=[],weightWin=frame.contentWindow,weightClick=weightWin.HTMLAnchorElement.prototype.click;
+  weightWin.HTMLAnchorElement.prototype.click=function(){weightDownloads.push({name:this.download,text:weightWin.fetch(this.href).then(response=>response.text())});};
+  frame.contentDocument.getElementById('more-menu').open=true;await click(frame,'#export-json');frame.contentDocument.getElementById('more-menu').open=true;await click(frame,'#export-csv');weightWin.HTMLAnchorElement.prototype.click=weightClick;
+  const weightJson=JSON.parse(await weightDownloads[0].text),weightCsv=await weightDownloads[1].text;
+  check(weightJson.events.some(event=>event.type==='weight'&&event.weightKg===6.5)&&weightJson.events.some(event=>event.type==='weight'&&event.deletedAt!==null),'B: JSON backup preserves weight values and tombstones');
+  check(weightCsv.includes('mealAmount,weightKg,note\r\n')&&weightCsv.includes('"6.5"')&&!weightCsv.includes(`"${secondWeight.id}"`),'B: CSV includes active weight values and excludes tombstones');
+  await importBackup(frame,weightJson);await reload(frame);
+  check(same(state(frame),weightBackup),'B: JSON import/restore preserves weight events and tombstones');
+  starting[1].remove();await reset();frame=await start();await waitFor(()=>frame.contentWindow.eval('diaryLoaded')===true,'weight fixture reset startup');
+  check(state(frame).events.length===0&&state(frame).demoCleared,'B: weight browser checks restore the disposable empty diary');
 
   for (const [selector,type,location] of [
     ['[data-add="wee"]','wee','outside'],['[data-add="poo"]','poo','outside'],['[data-add="meal"]','meal',undefined],
@@ -200,16 +239,16 @@ async function run() {
   win.HTMLAnchorElement.prototype.click=originalClick;
   const json=JSON.parse(await downloads[0].text), csv=await downloads[1].text;
   check(downloads[0].name.endsWith('.json') && same(Object.keys(json),['version','exportedAt','demoCleared','events']) && json.version===2 && json.demoCleared===exportState.demoCleared && same(json.events,exportState.events),'C: JSON v2 export preserves metadata, tombstones and event order');
-  check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,note\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
+  check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,weightKg,note\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
   check(!csv.includes('m-poo') && csv.includes('z-wee'),'C: CSV excludes tombstones while keeping active events');
   await importBackup(frame,json);await reload(frame);check(same(state(frame),exportState),'C: actual JSON export restores losslessly');
   await importBackup(frame,{version:2,demoCleared:imported.demoCleared,events:imported.events});
   await click(frame,'[data-filter="wee"]'); check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===1,'C: timeline filter still works');
-  const dayTotals=()=>Array.from(frame.contentDocument.querySelectorAll('#timeline .day-summary')).map(group=>Array.from(group.querySelectorAll('.day-count')).map(cell=>cell.textContent.trim()));
-  check(same(dayTotals(),[['0','1','1'],['1','0','0']]),'C: daily icon totals include all active types independently of the diary filter');
+  const dayTotals=()=>Array.from(frame.contentDocument.querySelectorAll('#timeline .day-summary')).map(group=>Array.from(group.querySelectorAll('.day-count')).map(cell=>cell.querySelector('span[aria-hidden="true"]:last-child').textContent.trim()));
+  check(same(dayTotals(),[['0','1','1','1'],['1','0','0','0']]),'C: daily icon totals include all active types independently of the diary filter');
   const dayRows=Array.from(frame.contentDocument.querySelectorAll('#timeline .time-row'));
   check(dayRows.every(row=>row.querySelector('.date-label .day-summary') && !row.querySelector(':scope > .day-totals')),'C: daily totals sit beneath their date labels with no separate right-hand area');
-  check(dayRows[0].querySelector('.day-summary').getAttribute('aria-label')==='0 wees, 1 poo, 1 meal','C: daily summary exposes labelled counts to assistive technology');
+  check(dayRows[0].querySelector('.day-summary').getAttribute('aria-label')==='0 wees, 1 poo, 1 meal, 1 accident','C: daily summary exposes labelled counts to assistive technology');
   frame.style.width='900px'; await new Promise(resolve=>setTimeout(resolve,20));
   const plot=frame.contentDocument.querySelector('#timeline .time-row .plot').getBoundingClientRect(),bucket=frame.contentDocument.querySelector('#aggregate .bucket-strip').getBoundingClientRect(),axis=frame.contentDocument.querySelector('#aggregate .axis').getBoundingClientRect(),timelineAxis=frame.contentDocument.querySelector('#timeline .axis').getBoundingClientRect(),grid=getComputedStyle(frame.contentDocument.querySelector('#timeline .time-row')).gridTemplateColumns.split(' ').length;
   check(frame.contentWindow.getComputedStyle(dayRows[0].querySelector('.day-summary')).display!=='none' && grid===2 && Math.abs(plot.left-bucket.left)<1 && Math.abs(plot.right-bucket.right)<1 && Math.abs(axis.left-plot.left)<1 && Math.abs(axis.right-plot.right)<1 && Math.abs(timelineAxis.right-plot.right)<1,'C: desktop totals stay visible while the timeline reclaims the reserved column and keeps its axes aligned');
@@ -290,9 +329,9 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v44');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v44'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v44 cache includes every static shell file');
+  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v47');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open('bellas-diary-shell-v47'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: v47 cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -313,9 +352,9 @@ async function run() {
   await waitFor(()=>state(peerDelete).events.find(e=>e.id==='m-poo')?.deletedAt!=null,'peer tombstone refresh');
   await reload(peerDelete);check(same(state(peerDelete),state(frame)) && !peerDelete.contentDocument.querySelector('#timeline [data-id="m-poo"]'),'F: peer refresh/reload retains tombstone without resurrection');peerDelete.remove();
   check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===2 && frame.contentDocument.querySelectorAll('#data tbody tr').length===2 && frame.contentDocument.querySelector('#summary .metric strong').textContent==='2','F: deleted accident excluded from table, timeline and tracked-day counts');
-  check(same(dayTotals(),[['0','0','1'],['1','0','0']]),'F: daily totals exclude tombstoned events and retain zero counts');
+  check(same(dayTotals(),[['0','0','1','0'],['1','0','0','0']]),'F: daily totals exclude tombstoned events and retain zero counts');
   const activeStats=frame.contentWindow.eval('statistics(activeEvents())');
-  check(frame.contentDocument.getElementById('stats').textContent.includes('Accident-free streak2 days') && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
+  check(frame.contentDocument.getElementById('stats').textContent.includes(`Accident-free streak${frame.contentWindow.eval('accidentFreeTime(activeEvents()).value')}`) && activeStats.mealPoo===null,'F: deleted accident excluded from streak and meal statistics');
   await authChecks(frame);
   await cloudChecks();
   await modelChecks(frame);

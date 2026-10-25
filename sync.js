@@ -3,7 +3,7 @@
 // Bella's small household reconciler. UI still reads/writes only IndexedDB.
 (() => {
   const uuid = id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-  const fields = {pooConsistency:'poo_consistency',mealFood:'meal_food',mealAmount:'meal_amount',
+  const fields = {pooConsistency:'poo_consistency',mealFood:'meal_food',mealAmount:'meal_amount',weightKg:'weight_kg',
     createdAt:'client_created_at',updatedAt:'client_updated_at',deletedAt:'deleted_at',mutationId:'mutation_id'};
   let running = false, queued = false, scheduled = null, controller = null, identity = null, generation = 0, status = '';
   const el = id => document.getElementById(id);
@@ -12,7 +12,7 @@
   // One normal-diary field mapping. No server-generated values are sent.
   function toCloud(event,householdId) {
     const row = {id:event.id,household_id:householdId,type:event.type,datetime:event.datetime,note:event.note,demo:false,
-      location:event.location ?? null,poo_consistency:null,meal_food:null,meal_amount:null};
+      location:event.location ?? null,poo_consistency:null,meal_food:null,meal_amount:null,weight_kg:null};
     for (const [local,cloud] of Object.entries(fields)) row[cloud] = event[local] ?? null;
     return row;
   }

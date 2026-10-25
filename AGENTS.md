@@ -41,6 +41,9 @@ In order:
 - Must not require horizontal scrolling.
 - Timeline and Data views share the same event store and editor; most recent
   dates/events appear first.
+- Weight is a low-frequency event stored as `weightKg` in kilograms, entered
+  through Custom entry and shown in Data/Stats. Exclude it from house-training
+  timeline, headline and timing calculations.
 - Local data remains available when signed out or offline. Auth/network failures
   must not block diary startup or roll back committed local edits.
 - Fresh diaries start empty. Automatically physically purge local `demo:true`
@@ -72,6 +75,8 @@ Do not change storage schemas incompatibly without atomic migration logic.
 Current IndexedDB/diary schema is version 4; JSON backups remain format version 2
 with explicit support for older version 1 backups. Preserve real metadata,
 tombstones, ordering and binding during migrations/imports.
+Weight uses the existing event store/schema and the additive Supabase migration;
+keep JSON/CSV handling and cloud serialization compatible with older records.
 
 Bump the cache version in `sw.js` when cached application-shell files change.
 Cache only the static shell, never Supabase API responses or the external SDK.
