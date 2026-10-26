@@ -135,12 +135,19 @@ header .page-tabs{justify-self:auto}
 .chart-median-label.chart-series-meal-poo{color:var(--meal)}
 .chart-point.chart-series-wee-accident,.chart-reference.chart-series-wee-accident,.chart-trend-point.chart-series-wee-accident{fill:#b65a3d}
 .chart-trend.chart-series-wee-accident,.chart-ordered.chart-series-wee-accident{stroke:#b65a3d}
-.chart-trend.chart-series-accident-rate{stroke:#b65a3d;stroke-width:2.8;opacity:.95;stroke-linejoin:miter;stroke-linecap:square;pointer-events:none}
+.chart-point.chart-series-wee-accident{opacity:.95;stroke:#8e3f2d;stroke-width:.5}
+.chart-trend.chart-series-wee-accident{stroke-width:1.6;opacity:.72;stroke-linecap:round}
+.chart-trend.chart-series-accident-rate{stroke:#c87960;stroke-width:2.2;opacity:.76;stroke-linejoin:miter;stroke-linecap:square;stroke-dasharray:5 4;pointer-events:none}
 .chart-accident-rate-hit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer;outline:none}
 .chart-accident-rate-hit:focus{stroke:#b65a3d;stroke-opacity:.18;stroke-width:10}
+.chart-open-accident-marker{fill:#fffef9;stroke:#b65a3d;stroke-width:2;stroke-dasharray:2 1}
+.chart-open-accident-symbol{fill:#b65a3d;font:700 10px system-ui,sans-serif;pointer-events:none}
+.chart-open-accident{cursor:pointer;outline:none}.chart-open-accident:focus .chart-open-accident-marker{stroke-width:3}
+.chart-open-accident-label{pointer-events:none}.chart-open-accident-label rect{fill:#fffef9;stroke:#b65a3d;stroke-opacity:.65}.chart-open-accident-label text{fill:#8e3f2d;font:600 10px system-ui,sans-serif}
 .chart-accident-axis,.chart-accident-tick{stroke:#b65a3d;stroke-width:1}
 .chart-accident-axis-label,.chart-accident-axis-title,.chart-rate-left-title{fill:#b65a3d}
-.chart-rate-example{display:inline-block;width:12px;height:2px;background:#b65a3d;vertical-align:middle}
+.chart-rate-example{display:inline-block;width:14px;height:0;border-top:2px dashed #c87960;vertical-align:middle}
+.open-accident-example{display:inline-flex;width:12px;height:12px;align-items:center;justify-content:center;border:1.5px dashed #b65a3d;border-radius:50%;color:#b65a3d;font:700 9px system-ui,sans-serif;vertical-align:middle}
 .chart-median-label.chart-series-wee-accident{color:#b65a3d}
 .chart-accident-symbol{fill:#fff;font-family:system-ui,sans-serif;font-weight:700;pointer-events:none}
 .chart-median-label rect{fill:#fffef9;fill-opacity:.96;stroke:currentColor;stroke-opacity:.35}
