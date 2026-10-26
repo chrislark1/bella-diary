@@ -18,9 +18,19 @@ const minutesOf = event => Number(event.datetime.slice(11, 13)) * 60 + Number(ev
 // Daily marks and Timing Summary buckets share the same 00–24 plotting geometry.
 const position = event => minutesOf(event) / 1440 * 100;
 const accident = event => (event.type === 'wee' || event.type === 'poo') && event.location === 'inside';
+function diaryHistoryStart(events,now) {
+  const end=now.getTime();
+  const times=events.filter(event=>isActiveEvent(event)&&event.demo!==true&&isToiletingEvent(event))
+    .map(event=>Date.parse(event.datetime)).filter(time=>Number.isFinite(time)&&time<=end);
+  return times.length?Math.min(...times):null;
+}
+function accidentRateWindowAvailable(events,now,windowHours) {
+  const start=diaryHistoryStart(events,now),end=now.getTime();
+  return start!==null&&Number.isFinite(end)&&Number.isFinite(windowHours)&&windowHours>0&&end-start>=windowHours*3600000;
+}
 function accidentRate(events,now,windowHours) {
   const end=now.getTime(),start=end-windowHours*3600000;
-  if (!Number.isFinite(end)||!Number.isFinite(windowHours)||windowHours<=0) return 0;
+  if (!accidentRateWindowAvailable(events,now,windowHours)) return null;
   const count=events.filter(event=>{
     const time=Date.parse(event.datetime);
     return isActiveEvent(event)&&event.demo!==true&&accident(event)&&Number.isFinite(time)&&time>=start&&time<=end;
@@ -273,12 +283,14 @@ function renderHeader(events, now = new Date()) {
   const since = type => elapsedSince(latestByType[type]);
   const latestAccident=events.filter(accident).reduce((found,event)=>!found||Date.parse(event.datetime)>Date.parse(found.datetime)?event:found,null);
   const accidentElapsed=elapsedSince(latestAccident);
+  const rate72=stats.accidentRate72h===null?'—':`${stats.accidentRate72h.toFixed(1)} / 24h`;
+  const rate72Aria=stats.accidentRate72h===null?'Recent accident rate unavailable; a complete 72-hour diary window is not available.':`Recent accident rate: ${stats.accidentRate72h.toFixed(1)} accidents per 24 hours over the last 72 hours.`;
   const metrics = [
     {value:new Set(events.map(dateOf)).size,label:'Days tracked',aria:`${new Set(events.map(dateOf)).size} days tracked`},
     {className:'decision-metric',value:compactDuration(since('wee')),accident:since('wee')!==null&&accident(latestByType.wee),description:'Since last wee',median:`Median ${compactDuration(stats.interval)}`,aria:`Time since last wee: ${spokenDuration(since('wee'))}. Median wee interval: ${spokenDuration(stats.interval)}.`},
     {className:'decision-metric desktop-only-metric',value:compactDuration(since('meal')),description:'Since last meal',median:`Meal → poo median ${compactDuration(stats.mealPoo)}`,aria:`Time since last meal: ${spokenDuration(since('meal'))}. Median meal to poo: ${spokenDuration(stats.mealPoo)}.`},
     {className:'decision-metric',value:compactDuration(since('poo')),accident:since('poo')!==null&&accident(latestByType.poo),description:'Since last poo',median:`Median ${compactDuration(stats.pooInterval)}`,aria:`Time since last poo: ${spokenDuration(since('poo'))}. Median poo interval: ${spokenDuration(stats.pooInterval)}.`},
-    {className:'decision-metric mobile-only-metric',value:compactDuration(accidentElapsed),description:'Since last accident',median:`${stats.accidentRate72h.toFixed(1)} / 24h`,aria:`Time since last accident: ${spokenDuration(accidentElapsed)}. Recent accident rate: ${stats.accidentRate72h.toFixed(1)} accidents per 24 hours over the last 72 hours.`},
+    {className:'decision-metric mobile-only-metric',value:compactDuration(accidentElapsed),description:'Since last accident',median:rate72,aria:`Time since last accident: ${spokenDuration(accidentElapsed)}. ${rate72Aria}`},
     {value:freeTime.value,label:'Accident-free',aria:freeTime.aria}
   ];
   $('summary').innerHTML = metrics.map(metric => `<div class="metric${metric.className?' '+metric.className:''}" aria-label="${escapeHTML(metric.aria+(metric.accident?' Latest event was an inside accident.':''))}"><strong>${metric.value}${metric.accident?'<i class="accident-example header-accident" aria-hidden="true" title="Latest event was an inside accident">!</i>':''}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
@@ -430,11 +442,12 @@ function statistics(events,now=new Date()) {
 
 function renderStats(events,now=new Date()) {
   const s = statistics(events,now);
+  const rate72=s.accidentRate72h===null?'—':s.accidentRate72h.toFixed(1),rate7d=s.accidentRate7d===null?'—':s.accidentRate7d.toFixed(1);
   const weights=weightSummary(events);
   const elapsedDays=weights.previous?(Date.parse(weights.latest.datetime)-Date.parse(weights.previous.datetime))/86400000:0;
   const weightRate=elapsedDays>0?formatWeightRate((weights.latest.weightKg-weights.previous.weightKg)/elapsedDays*7):'—';
   const groups = [
-    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accidents / 24h (last 72h)',s.accidentRate72h.toFixed(1)],['Accidents / 24h (last 7d)',s.accidentRate7d.toFixed(1)],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
+    ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accidents / 24h (last 72h)',rate72],['Accidents / 24h (last 7d)',rate7d],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
     ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Median wee accident gap',compactDuration(s.weeAccidentGap)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
     ['Weight', [['Latest weight',weights.latest?formatWeight(weights.latest.weightKg):'—'],['Average growth rate',weightRate]]]
   ];
@@ -570,7 +583,11 @@ function durationAxisTicks(maxMinutes,limit) {
 }
 
 function accidentRateObservations(events,startTime,now=new Date()) {
-  const end=now.getTime(),start=Math.min(startTime,end),changes=new Set([start,end]);
+  const end=now.getTime(),diaryStart=diaryHistoryStart(events,now);
+  if(diaryStart===null||!accidentRateWindowAvailable(events,now,72))return [];
+  const firstEligible=diaryStart+72*3600000,start=Math.max(Math.min(startTime,end),firstEligible);
+  if(start>end)return [];
+  const changes=new Set([start,end]);
   events.filter(event=>isActiveEvent(event)&&event.demo!==true&&accident(event)).forEach(event=>{
     const time=Date.parse(event.datetime);
     if(!Number.isFinite(time)||time>end)return;
@@ -600,7 +617,7 @@ function renderTimingChart(events,now=new Date()) {
   const target=$('timing-chart-plot'), detail=$('timing-point-detail');
   detail.textContent='Hover over, tap or focus a point to inspect its events.';
   if (!durationMetrics.length&&!rateEnabled) {target.innerHTML='<p class="empty">Select a timing series to show.</p>';return;}
-  if (!durationItems.length&&!rateItems.length) {target.innerHTML='<p class="empty">Not enough data yet</p>';return;}
+  if (!durationItems.length&&!rateItems.length&&!openGap) {target.innerHTML='<p class="empty">Not enough data yet</p>';return;}
 
   const hasDuration=durationItems.length>0||Boolean(openGap),hasRate=rateItems.length>0,mixedUnits=hasDuration&&hasRate;
   const W=Math.max(320,target.clientWidth||document.querySelector('main').clientWidth),H=430,left=W<600?54:76,right=mixedUnits?(W<600?50:64):(W<600?12:22),top=24,bottom=58,plotW=W-left-right,plotH=H-top-bottom;
@@ -612,7 +629,8 @@ function renderTimingChart(events,now=new Date()) {
   const rateY=value=>top+plotH*(value/rateMax);
   const medianData=durationSeries.map(row=>({metric:row.metric,value:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
   const medianPositions=resolveMedianLabelPositions(medianData,top+10,top+plotH-10);
-  const minTime=Math.min(...items.map(item=>item.completedAt)), maxTime=Math.max(...items.map(item=>item.completedAt)), sameTime=minTime===maxTime;
+  const chartRangeItems=openGap?[...items,...validEvents.map(completedAt=>({completedAt})),openGap]:items;
+  const minTime=Math.min(...chartRangeItems.map(item=>item.completedAt)), maxTime=Math.max(...chartRangeItems.map(item=>item.completedAt)), sameTime=minTime===maxTime;
   const xMin=timingView==='ordered'?0:(sameTime?minTime-12*3600000:minTime), xMax=timingView==='ordered'?100:(sameTime?maxTime+12*3600000:maxTime);
   const x=value=>left+(value-xMin)/(xMax-xMin)*plotW;
   const yTicks=hasDuration?(maxMinutes<=1440?[30,60,120,240,360,480,720,960,1200,1440].filter(value=>value<maxMinutes):durationAxisTicks(maxMinutes,W<600?3:5)):[];
@@ -829,7 +847,7 @@ function connectEvents() {
   setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);if(activePage==='stats'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Recent accident rates use rolling trailing 72-hour and 7-day windows, normalized to accidents per 24 hours. They update as events age out. The median wee accident gap is a separate descriptive metric.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its trend uses a trailing seven-calendar-day median (the completion day and previous six dates), requiring three observations; ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Recent accident rates use rolling trailing 72-hour and 7-day windows, normalized to accidents per 24 hours. They appear only after the diary has a full matching history window and update as events age out. The median wee accident gap is a separate descriptive metric.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its trend uses a trailing seven-calendar-day median (the completion day and previous six dates), requiring three observations; ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}

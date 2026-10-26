@@ -37,7 +37,7 @@ check('mobile metric order and desktop meal metric are present',()=>{
   assert.deepEqual(desktop,['Since last wee','Since last meal','Since last poo']);
   assert.match(css,/@media\(max-width:640px\)\{\.desktop-only-metric\{display:none\}\.mobile-only-metric\{display:block\}\}/);
 });
-check('latest active accident spans wee and poo accident events',()=>{
+check('latest active accident spans wee and poo accident events after the rate window is established',()=>{
   let html=render(new Date('2026-10-14T12:15:00'));
   assert.equal(metric(html,'Since last accident')[2],'0.3 / 24h');
   events.push(event('latest-wee-accident','wee','2026-10-14T11:45','inside'));
@@ -62,19 +62,40 @@ check('rolling accident rate uses the full window, inclusive boundary and active
   const now=new Date('2026-10-14T12:15:00'),at=(id,type,offsetHours,location='inside',extra={})=>{const time=vm.runInContext(`localDatetime(new Date(${now.getTime()-offsetHours*3600000}))`,app);return {...event(id,type,time,location),...extra};};
   const rate=items=>vm.runInContext(`accidentRate(${JSON.stringify(items)},new Date("2026-10-14T12:15:00"),72)`,app);
   const asDaily=value=>Number(value.toFixed(1));
-  assert.equal(asDaily(rate([])),0.0);
-  assert.equal(asDaily(rate([at('one','wee',1)])),0.3);
-  assert.equal(asDaily(rate([at('two-a','wee',1),at('two-b','poo',2)])),0.7);
-  assert.equal(asDaily(rate([at('three-a','wee',1),at('three-b','poo',2),at('three-c','wee',3)])),1.0);
+  const anchor=at('history-start','meal',72,'outside');
+  assert.equal(rate([]),null);
+  assert.equal(rate([at('one','wee',1)]),null);
+  assert.equal(asDaily(rate([anchor,at('one','wee',1)])),0.3);
+  assert.equal(asDaily(rate([anchor,at('two-a','wee',1),at('two-b','poo',2)])),0.7);
+  assert.equal(asDaily(rate([anchor,at('three-a','wee',1),at('three-b','poo',2),at('three-c','wee',3)])),1.0);
   assert.equal(asDaily(rate([at('inside-boundary','poo',72)])),0.3);
-  assert.equal(asDaily(rate([at('too-old','wee',72.01)])),0.0);
-  assert.equal(asDaily(rate([at('future','poo',-1)])),0.0);
-  assert.equal(asDaily(rate([at('outside','wee',1,'outside')])),0.0);
-  assert.equal(asDaily(rate([at('deleted','poo',1,'inside',{deletedAt:'2026-10-14T12:10:00.000Z'})])),0.0);
-  assert.equal(asDaily(rate([at('demo','wee',1,'inside',{demo:true})])),0.0);
-  assert.equal(asDaily(rate([at('recent','poo',1)])),0.3,'a short diary history still uses the full 72-hour denominator');
-  const weekly=vm.runInContext(`statistics(${JSON.stringify([at('weekly-1','wee',1),at('weekly-2','poo',72)] )},new Date("2026-10-14T12:15:00")).accidentRate7d`,app);
+  assert.equal(asDaily(rate([anchor,at('too-old','wee',72.01)])),0.0);
+  assert.equal(asDaily(rate([anchor,at('future','poo',-1)])),0.0);
+  assert.equal(asDaily(rate([anchor,at('outside','wee',1,'outside')])),0.0);
+  assert.equal(asDaily(rate([anchor,at('deleted','poo',1,'inside',{deletedAt:'2026-10-14T12:10:00.000Z'})])),0.0);
+  assert.equal(asDaily(rate([anchor,at('demo','wee',1,'inside',{demo:true})])),0.0);
+  assert.equal(rate([at('recent','poo',1)]),null,'a short diary history has no complete 72-hour window');
+  const weekly=vm.runInContext(`statistics(${JSON.stringify([at('weekly-start','meal',168,'outside'),at('weekly-1','wee',1),at('weekly-2','poo',72)] )},new Date("2026-10-14T12:15:00")).accidentRate7d`,app);
   assert.equal(asDaily(weekly),0.3);
+});
+check('rate availability requires complete 72-hour and 7-day history from valid toileting events',()=>{
+  const now=new Date('2026-10-14T12:15:00'),instant=hours=>new Date(now.getTime()-hours*3600000).toISOString(),at=(id,type,hours,location='outside',extra={})=>({...event(id,type,instant(hours),location),...extra});
+  const rate=(items,hours)=>vm.runInContext(`accidentRate(${JSON.stringify(items)},new Date("2026-10-14T12:15:00"),${hours})`,app);
+  assert.equal(vm.runInContext(`diaryHistoryStart([],new Date("2026-10-14T12:15:00"))`,app),null);
+  assert.equal(rate([],72),null);
+  assert.equal(rate([at('before-72','meal',71.9999),at('early-accident','wee',1,'inside')],72),null);
+  assert.equal(rate([at('exact-72','meal',72),at('exact-accident','wee',1,'inside')],72),1/3);
+  assert.equal(rate([at('after-72','meal',73),at('after-accident','poo',1,'inside')],72),1/3);
+  assert.equal(rate([at('before-7d','meal',167.9999),at('week-accident','poo',1,'inside')],168),null);
+  assert.equal(rate([at('exact-7d','meal',168),at('week-accident','poo',1,'inside')],168),1/7);
+  assert.equal(rate([at('after-7d','meal',169),at('week-a','wee',1,'inside'),at('week-b','poo',72,'inside')],168),2/7);
+  const start=vm.runInContext(`diaryHistoryStart(${JSON.stringify([at('real','meal',20),{...at('weight','weight',500),weightKg:7},{...at('future','wee',-12,'inside')},{...at('deleted','poo',500,'inside',{deletedAt:'2026-10-01T00:00:00.000Z'})},{...at('demo','wee',400,'inside',{demo:true})}])},new Date("2026-10-14T12:15:00"))`,app);
+  assert.equal(start,Date.parse(instant(20)),'weight, demo, deleted, and future records do not move diaryStart');
+  app.shortDiary=[at('short-window','meal',12)];
+  vm.runInContext('renderHeader(shortDiary,new Date("2026-10-14T12:15:00"));renderStats(shortDiary,new Date("2026-10-14T12:15:00"))',app);
+  assert.equal(metric(summary.innerHTML,'Since last accident')[2],'—');
+  assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 72h\)<\/span><strong>—/);
+  assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 7d\)<\/span><strong>—/);
 });
 check('After a meal is removed and Weight stats show latest value and date-adjusted growth rate',()=>{
   app.fixture=events.filter(event=>event.type!=='weight').concat([
