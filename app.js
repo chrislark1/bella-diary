@@ -591,7 +591,9 @@ function renderTimingChart(events,now=new Date()) {
   const maxMinutes=Math.max(0,...durationItems.map(item=>item.minutes)),yMax=Math.max(30,maxMinutes*1.1);
   const y=value=>top+plotH*(1-value/yMax);
   const maxRate=Math.max(0,...rateItems.map(item=>item.rate)),rateMax=Math.max(.5,Math.ceil(maxRate));
-  const rateY=value=>top+plotH*(1-value/rateMax);
+  // Accident-rate improvement moves upward: zero is at the top and larger
+  // rates move down a linear scale. Duration metrics keep their normal axis.
+  const rateY=value=>top+plotH*(value/rateMax);
   const medianData=durationSeries.map(row=>({metric:row.metric,value:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
   const medianPositions=resolveMedianLabelPositions(medianData,top+10,top+plotH-10);
   const minTime=Math.min(...items.map(item=>item.completedAt)), maxTime=Math.max(...items.map(item=>item.completedAt)), sameTime=minTime===maxTime;
@@ -634,18 +636,18 @@ function renderTimingChart(events,now=new Date()) {
     const positioned=rateItems.map(item=>({item,x:x(item.completedAt),y:rateY(item.rate)}));
     if(positioned.length>1){
       const path=`M ${positioned[0].x} ${positioned[0].y} ${positioned.slice(1).map(point=>`H ${point.x} V ${point.y}`).join(' ')}`;
-      chartParts.push(`<path class="chart-trend chart-series-accident-rate chart-accident-rate-line" d="${path}"/>`);
-    }
-    for(const point of positioned){
-      const label=chartPointLabel(point.item),plain=label.replaceAll('\n','. '),accessible=`Recent accident rate: ${point.item.rate.toFixed(1)} accidents per 24 hours, calculated over the previous 72 hours.`;
-      chartParts.push(`<g class="chart-point chart-series-accident-rate" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="accident-rate" data-value="${point.item.rate.toFixed(1)}" data-accident="false" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title><circle class="chart-hit-area" r="8"/><circle class="chart-rate-point" r="2.5"/></g>`);
+      chartParts.push(`<path class="chart-trend chart-series-accident-rate chart-accident-rate-line" d="${path}" aria-hidden="true"/>`);
+      positioned.slice(1).forEach((point,index)=>{
+        const previous=positioned[index],label=chartPointLabel(previous.item),plain=label.replaceAll('\n','. '),accessible=`Accident rate: ${previous.item.rate.toFixed(1)} accidents per 24 hours over the trailing 72 hours. Lower numeric rates are better; higher positions on this chart indicate improvement.`,hitPath=`M ${previous.x} ${previous.y} H ${point.x} V ${point.y}`;
+        chartParts.push(`<path class="chart-accident-rate-hit" d="${hitPath}" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="accident-rate" data-value="${previous.item.rate.toFixed(1)}" data-rate-value="${previous.item.rate}" data-rate-y="${previous.y}" data-point-detail="${escapeHTML(plain)}"><title>${escapeHTML(label)}</title></path>`);
+      });
     }
   }
   chartParts.push(...medianLabelParts);
-  const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>${mixedUnits?`<line class="chart-accident-axis" x1="${W-right}" x2="${W-right}" y1="${top}" y2="${top+plotH}"/>${rateTicks.map(value=>`<line class="chart-accident-tick" x1="${W-right-4}" x2="${W-right}" y1="${rateY(value)}" y2="${rateY(value)}"/><text class="chart-axis-label chart-accident-axis-label" x="${W-right+6}" y="${rateY(value)+4}">${value.toFixed(1)}</text>`).join('')}<text class="chart-axis-title chart-accident-axis-title" x="${W-10}" y="${top+plotH/2}" text-anchor="middle" transform="rotate(90 ${W-10} ${top+plotH/2})">Accidents / 24h</text>`:''}${hasRate&&!hasDuration?`<text class="chart-axis-title chart-rate-left-title" x="14" y="${top+plotH/2}" text-anchor="middle" transform="rotate(-90 14 ${top+plotH/2})">Accidents / 24h</text>`:''}`;
+  const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>${mixedUnits?`<line class="chart-accident-axis" x1="${W-right}" x2="${W-right}" y1="${top}" y2="${top+plotH}"/>${rateTicks.map(value=>`<line class="chart-accident-tick" x1="${W-right-4}" x2="${W-right}" y1="${rateY(value)}" y2="${rateY(value)}"/><text class="chart-axis-label chart-accident-axis-label" x="${W-right+6}" y="${rateY(value)+4}">${value.toFixed(1)}</text>`).join('')}<text class="chart-axis-title chart-accident-axis-title" x="${W-10}" y="${top+plotH/2}" text-anchor="middle" transform="rotate(90 ${W-10} ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}${hasRate&&!hasDuration?`<text class="chart-axis-title chart-rate-left-title" x="14" y="${top+plotH/2}" text-anchor="middle" transform="rotate(-90 14 ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}`;
   const hasQualifiedDistribution=series.some(row=>row.items.length>=MIN_SAMPLES);
   const orderedIqrBand=timingView==='ordered'&&hasQualifiedDistribution?`<rect class="chart-iqr-band" x="${x(25)}" y="${top}" width="${x(75)-x(25)}" height="${plotH}" aria-hidden="true"/>`:'';
-  target.innerHTML=`<svg class="timing-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="${timingView==='ordered'?'Ordered timing observations and distributions':hasRate?'Timing observations and recent accident rate over time':'Timing observations over time'}" data-left-max="${hasDuration?yMax:rateMax}"><g>${orderedIqrBand}${grid}${ticksY}${xAxis}<text class="chart-axis-title" x="${left+plotW/2}" y="${H-8}" text-anchor="middle">${axisTitle}</text>${chartParts.join('')}</g></svg>`;
+  target.innerHTML=`<svg class="timing-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="${timingView==='ordered'?'Ordered timing observations and distributions':hasRate?'Timing observations and recent accident rate over time':'Timing observations over time'}" data-left-max="${hasDuration?yMax:rateMax}"${hasRate?` data-rate-max="${rateMax}"`:''}><g>${orderedIqrBand}${grid}${ticksY}${xAxis}<text class="chart-axis-title" x="${left+plotW/2}" y="${H-8}" text-anchor="middle">${axisTitle}</text>${chartParts.join('')}</g></svg>`;
 }
 
 function render(now=new Date()) {
