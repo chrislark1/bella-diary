@@ -266,8 +266,8 @@ function axisHTML(now = null) {
 
 function markHTML(event) {
   const label = `${shortDate(dateOf(event))}, ${event.datetime.slice(11,16)}, ${titleCase(event.type)}, ${details(event)}${event.note ? ', '+event.note : ''}`;
-  const inner = `<span class="symbol ${event.type}"></span>${accident(event) ? '<span class="badge" aria-hidden="true">!</span>' : ''}`;
-  return `<button class="event-mark" data-id="${escapeHTML(event.id)}" style="left:${position(event)}%" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}">${inner}</button>`;
+  const inner = `<span class="event-glyph"><span class="symbol ${event.type}"></span>${accident(event) ? '<span class="badge" aria-hidden="true">!</span>' : ''}</span>`;
+  return `<button class="event-mark event-mark-${event.type}" data-id="${escapeHTML(event.id)}" style="left:${position(event)}%" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}">${inner}</button>`;
 }
 
 function renderHeader(events, now = new Date()) {
