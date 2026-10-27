@@ -140,6 +140,7 @@ header .page-tabs{justify-self:auto}
 .chart-trend.chart-series-accident-rate{stroke:#c87960;stroke-width:2.2;opacity:.76;stroke-linejoin:miter;stroke-linecap:square;stroke-dasharray:5 4;pointer-events:none}
 .chart-accident-rate-hit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer;outline:none}
 .chart-accident-rate-hit:focus{stroke:#b65a3d;stroke-opacity:.18;stroke-width:10}
+.chart-rate-current-label{cursor:pointer;outline:none}.chart-rate-current-label line{stroke:#c87960;stroke-width:1.2}.chart-rate-current-label rect{fill:#fffef9;fill-opacity:.98;stroke:#c87960;stroke-opacity:.8}.chart-rate-current-label text{fill:#8e3f2d;font:600 10px system-ui,sans-serif}.chart-rate-current-label:focus rect{stroke-width:2}
 .chart-open-accident-marker{fill:#fffef9;stroke:#b65a3d;stroke-width:2;stroke-dasharray:2 1}
 .chart-open-accident-symbol{fill:#b65a3d;font:700 10px system-ui,sans-serif;pointer-events:none}
 .chart-open-accident{cursor:pointer;outline:none}.chart-open-accident:focus .chart-open-accident-marker{stroke-width:3}

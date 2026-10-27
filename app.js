@@ -564,6 +564,18 @@ function resolveMedianLabelPositions(labels,minY,maxY,minGap=20) {
   return new Map(sorted.map(label=>[label.metric,label]));
 }
 
+function placeChartEndpointLabel(point,width,height,geometry,occupied=[]) {
+  const minX=geometry.left+2,maxX=geometry.right-width-2,minY=geometry.top+height/2,maxY=geometry.bottom-height/2;
+  const xPositions=[maxX,Math.max(minX,maxX-width-6),minX];
+  const yPositions=[point.y];
+  for(let offset=height+4;offset<=geometry.bottom-geometry.top;offset+=height+4)yPositions.push(point.y-offset,point.y+offset);
+  for(const x of [...new Set(xPositions)])for(const rawY of yPositions){
+    const y=Math.max(minY,Math.min(maxY,rawY)),candidate={x,y:y-height/2,width,height};
+    if(!occupied.some(box=>candidate.x<box.x+box.width&&candidate.x+candidate.width>box.x&&candidate.y<box.y+box.height&&candidate.y+candidate.height>box.y))return {...candidate,centerY:y};
+  }
+  return {x:maxX,y:Math.max(minY,Math.min(maxY,point.y))-height/2,width,height,centerY:Math.max(minY,Math.min(maxY,point.y))};
+}
+
 function chartMedianLabelSVG(metric,value,medianY,labelY,mode,index,geometry) {
   const text=compactDuration(value), width=Math.max(38,text.length*6+8), height=18;
   let boxX,leader='';
@@ -695,6 +707,12 @@ function renderTimingChart(events,now=new Date()) {
     const pointX=x(ordered?percentile:now.getTime()),pointY=y(openGap.minutes),detail=ordered?orderedOpenWeeAccidentLabel(openGap,completed):openWeeAccidentLabel(openGap),accessible=ordered?`Current open wee accident gap: ${spokenDuration(openGap.minutes)} so far. ${detail.split('\n')[2]}. Still open and excluded from the completed distribution.`:`Current wee accident gap: ${spokenDuration(openGap.minutes)} so far. Last wee accident ${shortDate(dateOf(openGap.event))} ${openGap.event.datetime.slice(11,16)}. This interval is still open and is not a completed gap.`;
     const label=`${ordered?'Current':'Open'} ${compactDuration(openGap.minutes)}`,labelWidth=label.length*5.8+8,labelX=Math.max(left+labelWidth+3,Math.min(W-right-4,pointX-8)),labelY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));
     chartParts.push(`<g class="chart-open-accident" transform="translate(${pointX} ${pointY})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="wee-accident" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><circle class="chart-open-accident-marker" r="7"/><text class="chart-open-accident-symbol" x="0" y="2.8" text-anchor="middle">!</text></g><g class="chart-open-accident-label" aria-hidden="true"><rect x="${labelX-labelWidth}" y="${labelY-10}" width="${labelWidth}" height="15" rx="4"/><text x="${labelX-4}" y="${labelY+1}" text-anchor="end">${escapeHTML(label)}</text></g>`);
+  }
+  if(rateEnabled&&rateItems.length){
+    const current=rateItems[rateItems.length-1],endpoint={x:x(now.getTime()),y:rateY(current.rate)},label=`${current.rate.toFixed(1)} / 24h`,width=Math.max(54,label.length*6+8),height=18,occupied=[...medianPositions.values()].map(item=>({x:W-right-Math.max(38,compactDuration(item.value).length*6+8)-2,y:item.labelY-9,width:Math.max(38,compactDuration(item.value).length*6+8),height:18}));
+    if(showOpenGap){const pointY=y(openGap.minutes),openLabel=`Open ${compactDuration(openGap.minutes)}`,openWidth=openLabel.length*5.8+8,openX=Math.max(left+openWidth+3,Math.min(W-right-4,endpoint.x-8)),openY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));occupied.push({x:openX-openWidth,y:openY-10,width:openWidth,height:15});}
+    const placed=placeChartEndpointLabel(endpoint,width,height,{left,right:W-right,top,bottom:top+plotH},occupied),detail=`Current accident rate\n${current.rate.toFixed(1)} accidents / 24h\nTrailing 72h`,accessible=`Current accident rate: ${current.rate.toFixed(1)} accidents per 24 hours over the trailing 72 hours.`;
+    chartParts.push(`<g class="chart-rate-current-label" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="accident-rate" data-current-x="${endpoint.x}" data-current-y="${endpoint.y}" data-rate-value="${current.rate}" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><line x1="${endpoint.x}" y1="${endpoint.y}" x2="${placed.x+placed.width}" y2="${placed.centerY}"/><rect x="${placed.x}" y="${placed.y}" width="${placed.width}" height="${placed.height}" rx="4"/><text x="${placed.x+4}" y="${placed.centerY+3.5}">${escapeHTML(label)}</text></g>`);
   }
   const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>${mixedUnits?`<line class="chart-accident-axis" x1="${W-right}" x2="${W-right}" y1="${top}" y2="${top+plotH}"/>${rateTicks.map(value=>`<line class="chart-accident-tick" x1="${W-right-4}" x2="${W-right}" y1="${rateY(value)}" y2="${rateY(value)}"/><text class="chart-axis-label chart-accident-axis-label" x="${W-right+6}" y="${rateY(value)+4}">${value.toFixed(1)}</text>`).join('')}<text class="chart-axis-title chart-accident-axis-title" x="${W-10}" y="${top+plotH/2}" text-anchor="middle" transform="rotate(90 ${W-10} ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}${hasRate&&!hasDuration?`<text class="chart-axis-title chart-rate-left-title" x="14" y="${top+plotH/2}" text-anchor="middle" transform="rotate(-90 14 ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}`;
   const hasQualifiedDistribution=series.some(row=>row.items.length>=MIN_SAMPLES);
