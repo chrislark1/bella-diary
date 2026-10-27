@@ -413,6 +413,10 @@ function trailingMedianObservations(series,calendarDays=null) {
 
 function percentileRank(index,count) {return count===1?50:index/(count-1)*100;}
 
+function empiricalPercentilePosition(values,value) {
+  return values.length?values.filter(candidate=>candidate<=value).length/values.length*100:null;
+}
+
 function statistics(events,now=new Date()) {
   events=events.filter(isToiletingEvent);
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
@@ -528,6 +532,12 @@ function openWeeAccidentLabel(item) {
   return `Current wee accident gap\n${date} ${time}\n${compactDuration(item.minutes)} so far\nLast wee accident: ${lastDate} ${lastTime}\nStill open`;
 }
 
+function orderedOpenWeeAccidentLabel(item,completed) {
+  const fraction=empiricalPercentilePosition(completed.map(gap=>gap.minutes),item.minutes),longest=Math.max(...completed.map(gap=>gap.minutes));
+  const comparison=item.minutes>longest?'Longer than all completed gaps':item.minutes===longest?'At least as long as all completed gaps':fraction===0?'Shorter than all completed gaps':`Longer than ${Math.round(fraction)}% of completed gaps`;
+  return `Current wee accident gap\n${compactDuration(item.minutes)} so far\n${comparison}\nStill open; not a completed observation`;
+}
+
 function chartMarker(symbol,x,y,size=5) {
   if (symbol==='accident') return `<circle cx="${x}" cy="${y}" r="${size+1}"/><text class="chart-accident-symbol" x="${x}" y="${y+size*.55}" text-anchor="middle" font-size="${size*1.6}">!</text>`;
   if (symbol==='diamond') return `<rect x="${x-size}" y="${y-size}" width="${size*2}" height="${size*2}" transform="rotate(45 ${x} ${y})"/>`;
@@ -604,7 +614,9 @@ function renderTimingChart(events,now=new Date()) {
   const durationSeries=durationMetrics.map(metric=>({metric,items:all[metric]}));
   const durationItems=durationSeries.flatMap(row=>row.items);
   const rateEnabled=timingView==='over-time'&&timingMetrics.has('wee-accident');
-  const openGap=rateEnabled?currentWeeAccidentGap(events,now):null;
+  const openGap=timingMetrics.has('wee-accident')?currentWeeAccidentGap(events,now):null;
+  const completedAccidentGaps=all['wee-accident'];
+  const showOpenGap=Boolean(openGap)&&(timingView!=='ordered'||completedAccidentGaps.length>0);
   const validEvents=events.filter(event=>isActiveEvent(event)&&event.demo!==true&&isToiletingEvent(event)).map(event=>Date.parse(event.datetime)).filter(time=>Number.isFinite(time)&&time<=now.getTime());
   const startCandidates=[...durationItems.map(item=>item.completedAt),...validEvents];
   const dataStart=startCandidates.length?Math.min(...startCandidates):now.getTime()-72*3600000;
@@ -617,11 +629,11 @@ function renderTimingChart(events,now=new Date()) {
   const target=$('timing-chart-plot'), detail=$('timing-point-detail');
   detail.textContent='Hover over, tap or focus a point to inspect its events.';
   if (!durationMetrics.length&&!rateEnabled) {target.innerHTML='<p class="empty">Select a timing series to show.</p>';return;}
-  if (!durationItems.length&&!rateItems.length&&!openGap) {target.innerHTML='<p class="empty">Not enough data yet</p>';return;}
+  if (!durationItems.length&&!rateItems.length&&!showOpenGap) {target.innerHTML='<p class="empty">Not enough data yet</p>';return;}
 
-  const hasDuration=durationItems.length>0||Boolean(openGap),hasRate=rateItems.length>0,mixedUnits=hasDuration&&hasRate;
+  const hasDuration=durationItems.length>0||showOpenGap,hasRate=rateItems.length>0,mixedUnits=hasDuration&&hasRate;
   const W=Math.max(320,target.clientWidth||document.querySelector('main').clientWidth),H=430,left=W<600?54:76,right=mixedUnits?(W<600?50:64):(W<600?12:22),top=24,bottom=58,plotW=W-left-right,plotH=H-top-bottom;
-  const maxMinutes=Math.max(0,...durationItems.map(item=>item.minutes),openGap?.minutes||0),yMax=Math.max(30,maxMinutes*1.1);
+  const maxMinutes=Math.max(0,...durationItems.map(item=>item.minutes),showOpenGap?openGap.minutes:0),yMax=Math.max(30,maxMinutes*1.1);
   const y=value=>top+plotH*(1-value/yMax);
   const maxRate=Math.max(0,...rateItems.map(item=>item.rate)),rateMax=Math.max(.5,Math.ceil(maxRate));
   // Accident-rate improvement moves upward: zero is at the top and larger
@@ -629,7 +641,7 @@ function renderTimingChart(events,now=new Date()) {
   const rateY=value=>top+plotH*(value/rateMax);
   const medianData=durationSeries.map(row=>({metric:row.metric,value:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
   const medianPositions=resolveMedianLabelPositions(medianData,top+10,top+plotH-10);
-  const chartRangeItems=openGap?[...items,...validEvents.map(completedAt=>({completedAt})),openGap]:items;
+  const chartRangeItems=showOpenGap?[...items,...validEvents.map(completedAt=>({completedAt})),openGap]:items;
   const minTime=Math.min(...chartRangeItems.map(item=>item.completedAt)), maxTime=Math.max(...chartRangeItems.map(item=>item.completedAt)), sameTime=minTime===maxTime;
   const xMin=timingView==='ordered'?0:(sameTime?minTime-12*3600000:minTime), xMax=timingView==='ordered'?100:(sameTime?maxTime+12*3600000:maxTime);
   const x=value=>left+(value-xMin)/(xMax-xMin)*plotW;
@@ -678,10 +690,11 @@ function renderTimingChart(events,now=new Date()) {
     }
   }
   chartParts.push(...medianLabelParts);
-  if(openGap){
-    const pointX=x(now.getTime()),pointY=y(openGap.minutes),detail=openWeeAccidentLabel(openGap),accessible=`Current wee accident gap: ${spokenDuration(openGap.minutes)} so far. Last wee accident ${shortDate(dateOf(openGap.event))} ${openGap.event.datetime.slice(11,16)}. This interval is still open and is not a completed gap.`;
-    const label=`Open ${compactDuration(openGap.minutes)}`,labelWidth=label.length*5.8+8,labelX=Math.max(left+labelWidth+3,Math.min(W-right-4,pointX-8)),labelY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));
-    chartParts.push(`<g class="chart-open-accident" transform="translate(${pointX} ${pointY})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><circle class="chart-open-accident-marker" r="7"/><text class="chart-open-accident-symbol" x="0" y="2.8" text-anchor="middle">!</text></g><g class="chart-open-accident-label" aria-hidden="true"><rect x="${labelX-labelWidth}" y="${labelY-10}" width="${labelWidth}" height="15" rx="4"/><text x="${labelX-4}" y="${labelY+1}" text-anchor="end">${escapeHTML(label)}</text></g>`);
+  if(showOpenGap){
+    const ordered=timingView==='ordered',completed=completedAccidentGaps,percentile=ordered?empiricalPercentilePosition(completed.map(gap=>gap.minutes),openGap.minutes):null;
+    const pointX=x(ordered?percentile:now.getTime()),pointY=y(openGap.minutes),detail=ordered?orderedOpenWeeAccidentLabel(openGap,completed):openWeeAccidentLabel(openGap),accessible=ordered?`Current open wee accident gap: ${spokenDuration(openGap.minutes)} so far. ${detail.split('\n')[2]}. Still open and excluded from the completed distribution.`:`Current wee accident gap: ${spokenDuration(openGap.minutes)} so far. Last wee accident ${shortDate(dateOf(openGap.event))} ${openGap.event.datetime.slice(11,16)}. This interval is still open and is not a completed gap.`;
+    const label=`${ordered?'Current':'Open'} ${compactDuration(openGap.minutes)}`,labelWidth=label.length*5.8+8,labelX=Math.max(left+labelWidth+3,Math.min(W-right-4,pointX-8)),labelY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));
+    chartParts.push(`<g class="chart-open-accident" transform="translate(${pointX} ${pointY})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="wee-accident" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><circle class="chart-open-accident-marker" r="7"/><text class="chart-open-accident-symbol" x="0" y="2.8" text-anchor="middle">!</text></g><g class="chart-open-accident-label" aria-hidden="true"><rect x="${labelX-labelWidth}" y="${labelY-10}" width="${labelWidth}" height="15" rx="4"/><text x="${labelX-4}" y="${labelY+1}" text-anchor="end">${escapeHTML(label)}</text></g>`);
   }
   const ticksY=`<line class="chart-axis" x1="${left}" x2="${left}" y1="${top}" y2="${top+plotH}"/><line class="chart-axis" x1="${left}" x2="${W-right}" y1="${top+plotH}" y2="${top+plotH}"/>${mixedUnits?`<line class="chart-accident-axis" x1="${W-right}" x2="${W-right}" y1="${top}" y2="${top+plotH}"/>${rateTicks.map(value=>`<line class="chart-accident-tick" x1="${W-right-4}" x2="${W-right}" y1="${rateY(value)}" y2="${rateY(value)}"/><text class="chart-axis-label chart-accident-axis-label" x="${W-right+6}" y="${rateY(value)+4}">${value.toFixed(1)}</text>`).join('')}<text class="chart-axis-title chart-accident-axis-title" x="${W-10}" y="${top+plotH/2}" text-anchor="middle" transform="rotate(90 ${W-10} ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}${hasRate&&!hasDuration?`<text class="chart-axis-title chart-rate-left-title" x="14" y="${top+plotH/2}" text-anchor="middle" transform="rotate(-90 14 ${top+plotH/2})">Accidents / 24h · lower better</text>`:''}`;
   const hasQualifiedDistribution=series.some(row=>row.items.length>=MIN_SAMPLES);
