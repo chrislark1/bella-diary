@@ -28,13 +28,20 @@ const metric=(html,description)=>{
   return [element[2],element[3].match(/<strong>([\s\S]*?)<\/strong>/)[1],element[3].match(/<span class="metric-median">([^<]*)<\/span>/)[1]];
 };
 
-check('mobile metric order and desktop meal metric are present',()=>{
+check('mobile metrics remain unchanged and desktop uses the shared 72-hour accident rate',()=>{
   const html=render(new Date('2026-10-14T12:15:00'));
   const metrics=[...html.matchAll(/<div class="metric([^\"]*)" aria-label="[^"]*">([\s\S]*?)<\/div>/g)].map(match=>({className:match[1],description:match[2].match(/class="metric-description">([^<]+)/)?.[1]}));
   const mobile=metrics.filter(metric=>!metric.className.includes('desktop-only-metric')).map(metric=>metric.description).filter(Boolean);
   const desktop=metrics.filter(metric=>!metric.className.includes('mobile-only-metric')).map(metric=>metric.description).filter(Boolean);
   assert.deepEqual(mobile,['Since last wee','Since last poo','Since last accident']);
-  assert.deepEqual(desktop,['Since last wee','Since last meal','Since last poo']);
+  assert.deepEqual(desktop,['Since last wee','Accidents / 24h','Since last poo']);
+  const desktopRate=metric(html,'Accidents / 24h');
+  const shared=vm.runInContext('statistics(fixture,new Date("2026-10-14T12:15:00"))',app).accidentRate72h;
+  assert.equal(desktopRate[1],shared.toFixed(1));
+  assert.equal(desktopRate[2],'Last 72h');
+  assert.ok(desktopRate[0].includes(`Recent accident rate: ${shared.toFixed(1)} accidents per 24 hours over the trailing 72 hours`));
+  assert.doesNotMatch(html,/Since last meal|Meal → poo median/);
+  assert.equal(metric(html,'Since last accident')[2],`${shared.toFixed(1)} / 24h`);
   assert.match(css,/@media\(max-width:640px\)\{\.desktop-only-metric\{display:none\}\.mobile-only-metric\{display:block\}\}/);
 });
 check('latest active accident spans wee and poo accident events after the rate window is established',()=>{
@@ -93,6 +100,10 @@ check('rate availability requires complete 72-hour and 7-day history from valid 
   assert.equal(start,Date.parse(instant(20)),'weight, demo, deleted, and future records do not move diaryStart');
   app.shortDiary=[at('short-window','meal',12)];
   vm.runInContext('renderHeader(shortDiary,new Date("2026-10-14T12:15:00"));renderStats(shortDiary,new Date("2026-10-14T12:15:00"))',app);
+  const desktopRate=metric(summary.innerHTML,'Accidents / 24h');
+  assert.equal(desktopRate[1],'—');
+  assert.equal(desktopRate[2],'Last 72h');
+  assert.match(desktopRate[0],/Recent accident rate not yet available because fewer than 72 hours of diary history have been recorded/);
   assert.equal(metric(summary.innerHTML,'Since last accident')[2],'—');
   assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 72h\)<\/span><strong>—/);
   assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 7d\)<\/span><strong>—/);
