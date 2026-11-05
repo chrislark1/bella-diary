@@ -398,7 +398,7 @@ function timingObservations(events) {
   return observations;
 }
 
-function trailingMedianObservations(series,calendarDays=null) {
+function trailingMedianObservations(series,calendarDays=null,observationCount=null) {
   let first=0;
   return series.map((item,index)=>{
     let cutoff=item.completedAt-72*3600000;
@@ -406,6 +406,7 @@ function trailingMedianObservations(series,calendarDays=null) {
       const day=new Date(item.completedAt);
       day.setHours(0,0,0,0);day.setDate(day.getDate()-calendarDays+1);cutoff=day.getTime();
     }
+    if(observationCount!==null)return {item,median:median(series.slice(Math.max(0,index-observationCount+1),index+1).map(candidate=>candidate.minutes))};
     while(first<index&&series[first].completedAt<cutoff)first++;
     return {item,median:median(series.slice(first,index+1).map(candidate=>candidate.minutes))};
   });
@@ -576,8 +577,8 @@ function placeChartEndpointLabel(point,width,height,geometry,occupied=[]) {
   return {x:maxX,y:Math.max(minY,Math.min(maxY,point.y))-height/2,width,height,centerY:Math.max(minY,Math.min(maxY,point.y))};
 }
 
-function chartMedianLabelSVG(metric,value,medianY,labelY,mode,index,geometry) {
-  const text=compactDuration(value), width=Math.max(38,text.length*6+8), height=18;
+function chartMedianLabelSVG(metric,value,medianY,labelY,mode,index,geometry,visibleLabel=null,accessibleLabel=null) {
+  const text=visibleLabel||compactDuration(value), width=Math.max(38,text.length*6+8), height=18;
   let boxX,leader='';
   if (mode==='over-time') {
     boxX=geometry.right-width-2;
@@ -590,7 +591,7 @@ function chartMedianLabelSVG(metric,value,medianY,labelY,mode,index,geometry) {
     boxX=Math.max(geometry.left+2,Math.min(geometry.right-width-2,boxX));
     if (Math.abs(labelY-medianY)>1) leader='<line class="chart-median-leader" x1="'+geometry.center+'" x2="'+(rightSide?boxX:boxX+width)+'" y1="'+medianY+'" y2="'+labelY+'"/>';
   }
-  const fullLabel=CHART_SERIES[metric].label+' median: '+spokenDuration(value), cls=chartSeriesClass(metric);
+  const fullLabel=accessibleLabel||CHART_SERIES[metric].label+' median: '+spokenDuration(value), cls=chartSeriesClass(metric);
   const accessible=mode==='over-time'?'role="img" aria-label="'+escapeHTML(fullLabel)+'"':'aria-hidden="true"';
   return '<g class="chart-median-label '+cls+'" data-metric="'+metric+'" data-median-y="'+medianY+'" data-label-y="'+labelY+'" '+accessible+'>'+leader+'<rect x="'+boxX+'" y="'+(labelY-height/2)+'" width="'+width+'" height="'+height+'" rx="4"/><text x="'+(boxX+4)+'" y="'+(labelY+3.5)+'">'+escapeHTML(text)+'</text></g>';
 }
@@ -651,7 +652,8 @@ function renderTimingChart(events,now=new Date()) {
   // Accident-rate improvement moves upward: zero is at the top and larger
   // rates move down a linear scale. Duration metrics keep their normal axis.
   const rateY=value=>top+plotH*(value/rateMax);
-  const medianData=durationSeries.map(row=>({metric:row.metric,value:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
+  const trendData=durationSeries.map(row=>({metric:row.metric,items:row.items,values:timingView==='over-time'?trailingMedianObservations(row.items,null,row.metric==='wee-accident'?5:null):[]}));
+  const medianData=trendData.map(row=>({metric:row.metric,value:timingView==='over-time'&&row.metric==='wee-accident'?row.values.at(-1)?.median??null:median(row.items.map(item=>item.minutes))})).filter(row=>row.value!==null).map(row=>({...row,y:y(row.value)}));
   const medianPositions=resolveMedianLabelPositions(medianData,top+10,top+plotH-10);
   const chartRangeItems=showOpenGap?[...items,...validEvents.map(completedAt=>({completedAt})),openGap]:items;
   const minTime=Math.min(...chartRangeItems.map(item=>item.completedAt)), maxTime=Math.max(...chartRangeItems.map(item=>item.completedAt)), sameTime=minTime===maxTime;
@@ -673,9 +675,14 @@ function renderTimingChart(events,now=new Date()) {
     const positioned=ordered.map((item,index)=>({item,x:timingView==='ordered'?x(percentileRank(index,ordered.length)):x(item.completedAt),y:y(item.minutes)}));
     const seriesClass=chartSeriesClass(row.metric);
     const overallMedian=medianPositions.get(row.metric);
-    if (overallMedian) medianLabelParts.push(chartMedianLabelSVG(row.metric,overallMedian.value,overallMedian.y,overallMedian.labelY,timingView,medianLabelParts.length,{left,right:W-right,center:x(50)}));
+    if (overallMedian) {
+      const trendCount=Math.min(row.items.length,5);
+      const trendLabel=timingView==='over-time'&&row.metric==='wee-accident'?`Last ${trendCount} median ${compactDuration(overallMedian.value)}`:null;
+      const trendAria=trendLabel?`Wee accident gap trend: median of the last ${trendCount} completed gaps, ${spokenDuration(overallMedian.value)}.`:null;
+      medianLabelParts.push(chartMedianLabelSVG(row.metric,overallMedian.value,overallMedian.y,overallMedian.labelY,timingView,medianLabelParts.length,{left,right:W-right,center:x(50)},trendLabel,trendAria));
+    }
     if (timingView==='over-time') {
-      const medians=trailingMedianObservations(row.items,row.metric==='wee-accident'?7:null).map((trend,index)=>({...positioned[index],median:trend.median}));
+      const medians=trendData.find(trend=>trend.metric===row.metric).values.map((trend,index)=>({...positioned[index],median:trend.median}));
       let segment=[];
       const flush=()=>{if(segment.length>1)chartParts.push(`<path class="chart-trend ${seriesClass}" d="${segment.map((point,index)=>`${index?'L':'M'} ${point.x} ${y(point.median)}`).join(' ')}"/>`);segment=[];};
       medians.forEach(point=>{if(point.median===null)flush();else {segment.push(point);chartParts.push(`<circle class="chart-trend-point ${seriesClass}" cx="${point.x}" cy="${y(point.median)}" r="2.5"/>`);}});flush();
@@ -878,7 +885,7 @@ function connectEvents() {
   setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);if(activePage==='stats'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Recent accident rates use rolling trailing 72-hour and 7-day windows, normalized to accidents per 24 hours. They appear only after the diary has a full matching history window and update as events age out. The median wee accident gap is a separate descriptive metric.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its trend uses a trailing seven-calendar-day median (the completion day and previous six dates), requiring three observations; ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>Recent accident rates use rolling trailing 72-hour and 7-day windows, normalized to accidents per 24 hours. They appear only after the diary has a full matching history window and update as events age out. The median wee accident gap in Stats and Ordered view is the overall historical median; the Over-time trend is the median of the last 5 completed gaps.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its Over-time trend uses the median of up to the last 5 completed gaps, requiring at least three observations. Ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}
