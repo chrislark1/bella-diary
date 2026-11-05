@@ -712,12 +712,26 @@ function renderTimingChart(events,now=new Date()) {
   if(showOpenGap){
     const ordered=timingView==='ordered',completed=completedAccidentGaps,percentile=ordered?empiricalPercentilePosition(completed.map(gap=>gap.minutes),openGap.minutes):null;
     const pointX=x(ordered?percentile:now.getTime()),pointY=y(openGap.minutes),detail=ordered?orderedOpenWeeAccidentLabel(openGap,completed):openWeeAccidentLabel(openGap),accessible=ordered?`Current open wee accident gap: ${spokenDuration(openGap.minutes)} so far. ${detail.split('\n')[2]}. Still open and excluded from the completed distribution.`:`Current wee accident gap: ${spokenDuration(openGap.minutes)} so far. Last wee accident ${shortDate(dateOf(openGap.event))} ${openGap.event.datetime.slice(11,16)}. This interval is still open and is not a completed gap.`;
-    const label=`${ordered?'Current':'Open'} ${compactDuration(openGap.minutes)}`,labelWidth=label.length*5.8+8,labelX=Math.max(left+labelWidth+3,Math.min(W-right-4,pointX-8)),labelY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));
-    chartParts.push(`<g class="chart-open-accident" transform="translate(${pointX} ${pointY})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="wee-accident" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><circle class="chart-open-accident-marker" r="7"/><text class="chart-open-accident-symbol" x="0" y="2.8" text-anchor="middle">!</text></g><g class="chart-open-accident-label" aria-hidden="true"><rect x="${labelX-labelWidth}" y="${labelY-10}" width="${labelWidth}" height="15" rx="4"/><text x="${labelX-4}" y="${labelY+1}" text-anchor="end">${escapeHTML(label)}</text></g>`);
+    const label=ordered?`Current ${compactDuration(openGap.minutes)}`:compactDuration(openGap.minutes),labelWidth=label.length*(W<600?4.8:5.8)+8,labelHeight=15;
+    let labelX,labelY,labelAnchor;
+    if(!ordered&&mixedUnits){
+      // The right margin reserved for the secondary rate axis also provides a
+      // compact home for the live gap duration, outside the plotting area.
+      labelX=W-right+(W<600?5:10);labelAnchor='start';
+      const labelLeft=labelX-3,occupied=rateTicks.map(value=>({x:W-right+4,y:rateY(value)-7,width:22,height:14}));
+      const candidates=[pointY,pointY-18,pointY+18,pointY-36,pointY+36];
+      labelY=Math.max(top+8,Math.min(top+plotH-8,pointY));
+      for(const candidate of candidates){const centerY=Math.max(top+8,Math.min(top+plotH-8,candidate)),box={x:labelLeft,y:centerY-labelHeight/2,width:labelWidth,height:labelHeight};if(!occupied.some(other=>box.x<other.x+other.width&&box.x+box.width>other.x&&box.y<other.y+other.height&&box.y+box.height>other.y)){labelY=centerY;break;}}
+    }else{
+      labelX=Math.max(left+labelWidth+3,Math.min(W-right-4,pointX-8));labelAnchor='end';
+      labelY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));
+    }
+    const boxX=labelAnchor==='start'?labelX-3:labelX-labelWidth, textX=labelAnchor==='start'?labelX+1:labelX-4;
+    chartParts.push(`<g class="chart-open-accident" transform="translate(${pointX} ${pointY})" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="wee-accident" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><circle class="chart-open-accident-marker" r="7"/><text class="chart-open-accident-symbol" x="0" y="2.8" text-anchor="middle">!</text></g><g class="chart-open-accident-label" aria-hidden="true"><rect x="${boxX}" y="${labelY-labelHeight/2}" width="${labelWidth}" height="${labelHeight}" rx="4"/><text x="${textX}" y="${labelY+3.5}" text-anchor="${labelAnchor}">${escapeHTML(label)}</text></g>`);
   }
   if(rateEnabled&&rateItems.length){
     const current=rateItems[rateItems.length-1],endpoint={x:x(now.getTime()),y:rateY(current.rate)},label=`${current.rate.toFixed(1)} / 24h`,width=Math.max(54,label.length*6+8),height=18,occupied=[...medianPositions.values()].map(item=>({x:W-right-Math.max(38,compactDuration(item.value).length*6+8)-2,y:item.labelY-9,width:Math.max(38,compactDuration(item.value).length*6+8),height:18}));
-    if(showOpenGap){const pointY=y(openGap.minutes),openLabel=`Open ${compactDuration(openGap.minutes)}`,openWidth=openLabel.length*5.8+8,openX=Math.max(left+openWidth+3,Math.min(W-right-4,endpoint.x-8)),openY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));occupied.push({x:openX-openWidth,y:openY-10,width:openWidth,height:15});}
+    if(showOpenGap&&!(timingView==='over-time'&&mixedUnits)){const pointY=y(openGap.minutes),openLabel=`Current ${compactDuration(openGap.minutes)}`,openWidth=openLabel.length*5.8+8,openX=Math.max(left+openWidth+3,Math.min(W-right-4,endpoint.x-8)),openY=Math.max(top+10,Math.min(top+plotH-5,pointY<top+28?pointY+15:pointY-11));occupied.push({x:openX-openWidth,y:openY-10,width:openWidth,height:15});}
     const placed=placeChartEndpointLabel(endpoint,width,height,{left,right:W-right,top,bottom:top+plotH},occupied),detail=`Current accident rate\n${current.rate.toFixed(1)} accidents / 24h\nTrailing 7 days`,accessible=`Current accident rate: ${current.rate.toFixed(1)} accidents per 24 hours over the trailing 7 days.`;
     chartParts.push(`<g class="chart-rate-current-label" tabindex="0" role="button" aria-label="${escapeHTML(accessible)}" data-metric="accident-rate" data-current-x="${endpoint.x}" data-current-y="${endpoint.y}" data-rate-value="${current.rate}" data-point-detail="${escapeHTML(detail)}"><title>${escapeHTML(detail)}</title><line x1="${endpoint.x}" y1="${endpoint.y}" x2="${placed.x+placed.width}" y2="${placed.centerY}"/><rect x="${placed.x}" y="${placed.y}" width="${placed.width}" height="${placed.height}" rx="4"/><text x="${placed.x+4}" y="${placed.centerY+3.5}">${escapeHTML(label)}</text></g>`);
   }
