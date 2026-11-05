@@ -28,7 +28,7 @@ const metric=(html,description)=>{
   return [element[2],element[3].match(/<strong>([\s\S]*?)<\/strong>/)[1],element[3].match(/<span class="metric-median">([^<]*)<\/span>/)[1]];
 };
 
-check('mobile metrics remain unchanged and desktop uses the shared 72-hour accident rate',()=>{
+check('mobile metrics remain unchanged and desktop uses the shared 7-day accident rate',()=>{
   const html=render(new Date('2026-10-14T12:15:00'));
   const metrics=[...html.matchAll(/<div class="metric([^\"]*)" aria-label="[^"]*">([\s\S]*?)<\/div>/g)].map(match=>({className:match[1],description:match[2].match(/class="metric-description">([^<]+)/)?.[1]}));
   const mobile=metrics.filter(metric=>!metric.className.includes('desktop-only-metric')).map(metric=>metric.description).filter(Boolean);
@@ -36,20 +36,20 @@ check('mobile metrics remain unchanged and desktop uses the shared 72-hour accid
   assert.deepEqual(mobile,['Since last wee','Since last poo','Since last accident']);
   assert.deepEqual(desktop,['Since last wee','Accidents / 24h','Since last poo']);
   const desktopRate=metric(html,'Accidents / 24h');
-  const shared=vm.runInContext('statistics(fixture,new Date("2026-10-14T12:15:00"))',app).accidentRate72h;
+  const shared=vm.runInContext('statistics(fixture,new Date("2026-10-14T12:15:00"))',app).accidentRate7d;
   assert.equal(desktopRate[1],shared.toFixed(1));
-  assert.equal(desktopRate[2],'Last 72h');
-  assert.ok(desktopRate[0].includes(`Recent accident rate: ${shared.toFixed(1)} accidents per 24 hours over the trailing 72 hours`));
+  assert.equal(desktopRate[2],'Last 7 days');
+  assert.ok(desktopRate[0].includes(`Recent accident rate: ${shared.toFixed(1)} accidents per 24 hours over the trailing 7 days`));
   assert.doesNotMatch(html,/Since last meal|Meal → poo median/);
   assert.equal(metric(html,'Since last accident')[2],`${shared.toFixed(1)} / 24h`);
   assert.match(css,/@media\(max-width:640px\)\{\.desktop-only-metric\{display:none\}\.mobile-only-metric\{display:block\}\}/);
 });
 check('latest active accident spans wee and poo accident events after the rate window is established',()=>{
   let html=render(new Date('2026-10-14T12:15:00'));
-  assert.equal(metric(html,'Since last accident')[2],'0.3 / 24h');
+  assert.equal(metric(html,'Since last accident')[2],'0.1 / 24h');
   events.push(event('latest-wee-accident','wee','2026-10-14T11:45','inside'));
   html=render(new Date('2026-10-14T12:15:00'));
-  assert.equal(metric(html,'Since last accident')[2],'0.7 / 24h');
+  assert.equal(metric(html,'Since last accident')[2],'0.3 / 24h');
   assert.equal(metric(html,'Since last accident')[0].match(/Time since last accident: ([^.]+)/)[1],'30 minutes');
 });
 check('shared rolling accident rate feeds headline and Stats while median gap remains in Stats only',()=>{
@@ -58,41 +58,36 @@ check('shared rolling accident rate feeds headline and Stats while median gap re
   const shared=vm.runInContext('statistics(fixture,new Date("2026-10-14T12:15:00"))',app);
   assert.equal(metric(html,'Since last wee')[2],`Median ${vm.runInContext(`compactDuration(${shared.interval})`,app)}`);
   assert.equal(metric(html,'Since last poo')[2],`Median ${vm.runInContext(`compactDuration(${shared.pooInterval})`,app)}`);
-  assert.equal(metric(html,'Since last accident')[2],`${shared.accidentRate72h.toFixed(1)} / 24h`);
-  assert.match(metric(html,'Since last accident')[0],/Recent accident rate: 0\.7 accidents per 24 hours over the last 72 hours/);
+  assert.equal(metric(html,'Since last accident')[2],`${shared.accidentRate7d.toFixed(1)} / 24h`);
+  assert.match(metric(html,'Since last accident')[0],/Recent accident rate: 0\.3 accidents per 24 hours over the last 7 days/);
   assert.doesNotMatch(metric(html,'Since last accident')[2],/median/i);
-  assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 72h\)<\/span><strong>0\.7/);
   assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 7d\)<\/span><strong>0\.3/);
+  assert.doesNotMatch(statsElement.innerHTML,/last 72h/i);
   assert.match(statsElement.innerHTML,/Median wee accident gap<\/span><strong>2d 0h/);
 });
-check('rolling accident rate uses the full window, inclusive boundary and active real accidents only',()=>{
+check('primary accident rate uses the complete trailing 7 days and active real accidents only',()=>{
   const now=new Date('2026-10-14T12:15:00'),at=(id,type,offsetHours,location='inside',extra={})=>{const time=vm.runInContext(`localDatetime(new Date(${now.getTime()-offsetHours*3600000}))`,app);return {...event(id,type,time,location),...extra};};
-  const rate=items=>vm.runInContext(`accidentRate(${JSON.stringify(items)},new Date("2026-10-14T12:15:00"),72)`,app);
-  const asDaily=value=>Number(value.toFixed(1));
-  const anchor=at('history-start','meal',72,'outside');
-  assert.equal(rate([]),null);
-  assert.equal(rate([at('one','wee',1)]),null);
-  assert.equal(asDaily(rate([anchor,at('one','wee',1)])),0.3);
-  assert.equal(asDaily(rate([anchor,at('two-a','wee',1),at('two-b','poo',2)])),0.7);
-  assert.equal(asDaily(rate([anchor,at('three-a','wee',1),at('three-b','poo',2),at('three-c','wee',3)])),1.0);
-  assert.equal(asDaily(rate([at('inside-boundary','poo',72)])),0.3);
-  assert.equal(asDaily(rate([anchor,at('too-old','wee',72.01)])),0.0);
+  const rate=items=>vm.runInContext(`accidentRate(${JSON.stringify(items)},new Date("2026-10-14T12:15:00"),168)`,app),asDaily=value=>Number(value.toFixed(1));
+  const anchor=at('history-start','meal',168,'outside');
+  assert.equal(rate([]),null);assert.equal(rate([at('one','wee',1)]),null);
+  assert.equal(asDaily(rate([anchor,at('one','wee',1)])),0.1);
+  assert.equal(asDaily(rate([anchor,at('two-a','wee',1),at('two-b','poo',2),at('three','wee',3)])),0.4);
+  assert.equal(asDaily(rate([anchor,...Array.from({length:7},(_,i)=>at(`accident-${i}`,'wee',i+1))])),1.0);
+  assert.equal(asDaily(rate([anchor,at('inside-boundary','poo',168)])),0.1);
+  assert.equal(asDaily(rate([anchor,at('too-old','wee',168.01)])),0.0);
   assert.equal(asDaily(rate([anchor,at('future','poo',-1)])),0.0);
   assert.equal(asDaily(rate([anchor,at('outside','wee',1,'outside')])),0.0);
   assert.equal(asDaily(rate([anchor,at('deleted','poo',1,'inside',{deletedAt:'2026-10-14T12:10:00.000Z'})])),0.0);
   assert.equal(asDaily(rate([anchor,at('demo','wee',1,'inside',{demo:true})])),0.0);
-  assert.equal(rate([at('recent','poo',1)]),null,'a short diary history has no complete 72-hour window');
-  const weekly=vm.runInContext(`statistics(${JSON.stringify([at('weekly-start','meal',168,'outside'),at('weekly-1','wee',1),at('weekly-2','poo',72)] )},new Date("2026-10-14T12:15:00")).accidentRate7d`,app);
-  assert.equal(asDaily(weekly),0.3);
 });
-check('rate availability requires complete 72-hour and 7-day history from valid toileting events',()=>{
+check('rate availability requires a complete 7-day history from valid toileting events',()=>{
   const now=new Date('2026-10-14T12:15:00'),instant=hours=>new Date(now.getTime()-hours*3600000).toISOString(),at=(id,type,hours,location='outside',extra={})=>({...event(id,type,instant(hours),location),...extra});
   const rate=(items,hours)=>vm.runInContext(`accidentRate(${JSON.stringify(items)},new Date("2026-10-14T12:15:00"),${hours})`,app);
   assert.equal(vm.runInContext(`diaryHistoryStart([],new Date("2026-10-14T12:15:00"))`,app),null);
-  assert.equal(rate([],72),null);
-  assert.equal(rate([at('before-72','meal',71.9999),at('early-accident','wee',1,'inside')],72),null);
-  assert.equal(rate([at('exact-72','meal',72),at('exact-accident','wee',1,'inside')],72),1/3);
-  assert.equal(rate([at('after-72','meal',73),at('after-accident','poo',1,'inside')],72),1/3);
+  assert.equal(rate([],168),null);
+  assert.equal(rate([at('before-7d','meal',167.9999),at('early-accident','wee',1,'inside')],168),null);
+  assert.equal(rate([at('exact-7d','meal',168),at('exact-accident','wee',1,'inside')],168),1/7);
+  assert.equal(rate([at('after-7d','meal',169),at('after-accident','poo',1,'inside')],168),1/7);
   assert.equal(rate([at('before-7d','meal',167.9999),at('week-accident','poo',1,'inside')],168),null);
   assert.equal(rate([at('exact-7d','meal',168),at('week-accident','poo',1,'inside')],168),1/7);
   assert.equal(rate([at('after-7d','meal',169),at('week-a','wee',1,'inside'),at('week-b','poo',72,'inside')],168),2/7);
@@ -102,11 +97,11 @@ check('rate availability requires complete 72-hour and 7-day history from valid 
   vm.runInContext('renderHeader(shortDiary,new Date("2026-10-14T12:15:00"));renderStats(shortDiary,new Date("2026-10-14T12:15:00"))',app);
   const desktopRate=metric(summary.innerHTML,'Accidents / 24h');
   assert.equal(desktopRate[1],'—');
-  assert.equal(desktopRate[2],'Last 72h');
-  assert.match(desktopRate[0],/Recent accident rate not yet available because fewer than 72 hours of diary history have been recorded/);
+  assert.equal(desktopRate[2],'Last 7 days');
+  assert.match(desktopRate[0],/Recent accident rate not yet available because fewer than 7 days of diary history have been recorded/);
   assert.equal(metric(summary.innerHTML,'Since last accident')[2],'—');
-  assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 72h\)<\/span><strong>—/);
   assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 7d\)<\/span><strong>—/);
+  assert.doesNotMatch(statsElement.innerHTML,/last 72h/i);
 });
 check('After a meal is removed and Weight stats show latest value and date-adjusted growth rate',()=>{
   app.fixture=events.filter(event=>event.type!=='weight').concat([
@@ -144,13 +139,13 @@ check('no recent accidents show zero and the mobile metric no longer displays an
 });
 check('existing minute refresh updates elapsed time and rolling rate without changing events',()=>{
   assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);if\(activePage==='stats'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
-  const boundary=event('ages-out','wee','2026-10-11T12:15','inside'),before=JSON.stringify([boundary]);
-  const first=render(new Date('2026-10-14T12:15:00'),[boundary]);
+  const boundaryEvents=[event('history','meal','2026-10-04T12:15'),event('ages-out','wee','2026-10-07T12:15','inside')],before=JSON.stringify(boundaryEvents);
+  const first=render(new Date('2026-10-14T12:15:00'),boundaryEvents);
   const elapsed1=metric(first,'Since last accident')[1];
-  const second=render(new Date('2026-10-14T12:16:00'),[boundary]);
-  assert.equal(elapsed1,'3d 0h');assert.equal(metric(first,'Since last accident')[2],'0.3 / 24h');
+  const second=render(new Date('2026-10-14T12:16:00'),boundaryEvents);
+  assert.equal(elapsed1,'7d 0h');assert.equal(metric(first,'Since last accident')[2],'0.1 / 24h');
   assert.equal(metric(second,'Since last accident')[2],'0.0 / 24h');
-  assert.equal(JSON.stringify([boundary]),before);
+  assert.equal(JSON.stringify(boundaryEvents),before);
 });
 
 console.log(`${passed} focused header-metric checks passed.`);
