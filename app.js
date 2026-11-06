@@ -679,7 +679,8 @@ function renderTimingChart(events,now=new Date()) {
       const trendCount=Math.min(row.items.length,5);
       const trendLabel=timingView==='over-time'&&row.metric==='wee-accident'?`Last ${trendCount} median ${compactDuration(overallMedian.value)}`:null;
       const trendAria=trendLabel?`Wee accident gap trend: median of the last ${trendCount} completed gaps, ${spokenDuration(overallMedian.value)}.`:null;
-      medianLabelParts.push(chartMedianLabelSVG(row.metric,overallMedian.value,overallMedian.y,overallMedian.labelY,timingView,medianLabelParts.length,{left,right:W-right,center:x(50)},trendLabel,trendAria));
+      const labelY=trendLabel?Math.max(top+10,overallMedian.labelY-16):overallMedian.labelY;
+      medianLabelParts.push(chartMedianLabelSVG(row.metric,overallMedian.value,overallMedian.y,labelY,timingView,medianLabelParts.length,{left,right:W-right,center:x(50)},trendLabel,trendAria));
     }
     if (timingView==='over-time') {
       const medians=trendData.find(trend=>trend.metric===row.metric).values.map((trend,index)=>({...positioned[index],median:trend.median}));
