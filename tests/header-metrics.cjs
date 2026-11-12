@@ -3,13 +3,13 @@
 // Focused checks for the responsive headline metrics; no browser or diary DB.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const summary={innerHTML:''},statsElement={innerHTML:''},weightPlot={innerHTML:'',clientWidth:640},weightDetail={textContent:''};
-const timingPanel={hidden:false},weightPanel={hidden:true},chartTabs=[{dataset:{statsChart:'timing'},attrs:{},setAttribute(key,value){this.attrs[key]=value;}},{dataset:{statsChart:'weight'},attrs:{},setAttribute(key,value){this.attrs[key]=value;}}];
+const weightSummaryElement={innerHTML:''},homeWeight={innerHTML:''};
 const app=vm.createContext({});
 const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
 const css=fs.readFileSync(path.join(__dirname,'../styles.css'),'utf8');
 const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
 vm.runInContext(source,app);
-app.document={getElementById:id=>({summary,stats:statsElement,'weight-chart-plot':weightPlot,'weight-point-detail':weightDetail,'timing-chart-panel':timingPanel,'weight-chart-panel':weightPanel})[id]||{innerHTML:'',textContent:''},querySelectorAll:()=>chartTabs};
+app.document={getElementById:id=>({summary,stats:statsElement,'weight-chart-plot':weightPlot,'weight-point-detail':weightDetail,'weight-summary':weightSummaryElement,'home-weight-summary':homeWeight})[id]||{innerHTML:'',textContent:''},querySelectorAll:()=>[]};
 let passed=0;
 const check=(name,test)=>{test();passed++;console.log('PASS '+name);};
 const event=(id,type,datetime,location='outside')=>({id,type,datetime,location,deletedAt:null});
@@ -103,17 +103,20 @@ check('rate availability requires a complete 7-day history from valid toileting 
   assert.match(statsElement.innerHTML,/Accidents \/ 24h \(last 7d\)<\/span><strong>—/);
   assert.doesNotMatch(statsElement.innerHTML,/last 72h/i);
 });
-check('After a meal is removed and Weight stats show latest value and date-adjusted growth rate',()=>{
+check('Weight summary moves out of toileting statistics and shares the Home latest value',()=>{
   app.fixture=events.filter(event=>event.type!=='weight').concat([
     {id:'weight-previous',type:'weight',datetime:'2026-10-12T09:30',weightKg:7.2,deletedAt:null},
     {id:'weight-latest',type:'weight',datetime:'2026-10-14T09:30',weightKg:7.45,deletedAt:null}
   ]);
-  vm.runInContext('renderStats(fixture,new Date("2026-10-14T12:15:00"))',app);
-  assert.match(statsElement.innerHTML,/<h3>Weight<\/h3>/);
-  assert.match(statsElement.innerHTML,/Latest weight<\/span><strong>7\.45 kg/);
-  assert.match(statsElement.innerHTML,/Average growth rate<\/span><strong>\+0\.88 kg\/week/);
-  assert.doesNotMatch(statsElement.innerHTML,/After a meal|Median time to wee|Median time to poo/);
-  assert.doesNotMatch(statsElement.innerHTML,/Previous weight|Last weighed/);
+  vm.runInContext('renderStats(fixture,new Date("2026-10-14T12:15:00"));renderWeight(weightSummary(fixture))',app);
+  assert.doesNotMatch(statsElement.innerHTML,/Weight|kg|After a meal/);
+  assert.match(weightSummaryElement.innerHTML,/7\.45 kg/);
+  assert.match(weightSummaryElement.innerHTML,/Average growth rate<\/span><strong>\+0\.88 kg\/week/);
+  assert.match(homeWeight.innerHTML,/7\.45 kg/);
+  assert.match(homeWeight.innerHTML,/Recorded <time datetime="2026-10-14T09:30">Wed 14 Oct/);
+  assert.doesNotMatch(homeWeight.innerHTML,/growth|svg/);
+  vm.runInContext('renderWeight(weightSummary([]))',app);
+  assert.match(homeWeight.innerHTML,/No weights recorded yet/);
 });
 check('weight chart uses whole-kilogram y-axis labels',()=>{
   vm.runInContext('renderWeightChart([{id:"a",datetime:"2026-10-14T09:30",weightKg:5.78},{id:"b",datetime:"2026-10-19T09:30",weightKg:6.98},{id:"c",datetime:"2026-10-25T09:30",weightKg:8.02}])',app);
@@ -121,15 +124,13 @@ check('weight chart uses whole-kilogram y-axis labels',()=>{
   assert.deepEqual(labels,['5','7','9','14 Oct','19 Oct','25 Oct']);
   assert.ok(labels.slice(0,3).every(label=>Number.isInteger(Number(label))));
 });
-check('Weight is an accessible alternate chart tab beside Timing observations',()=>{
-  assert.match(html,/<div id="stats-chart-tabs"[^>]*role="tablist"[^>]*aria-label="Statistics chart"/);
-  assert.match(html,/<button id="weight-chart-tab"[^>]*role="tab"[^>]*aria-controls="weight-chart-panel"/);
-  assert.match(html,/<div id="weight-chart-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="weight-chart-tab"[^>]*hidden/);
-  vm.runInContext('statsChartMode="weight";renderStatsChartMode()',app);
-  assert.equal(timingPanel.hidden,true);assert.equal(weightPanel.hidden,false);
-  assert.equal(chartTabs[0].attrs['aria-selected'],'false');assert.equal(chartTabs[1].attrs['aria-selected'],'true');
-  vm.runInContext('statsChartMode="timing";renderStatsChartMode()',app);
-  assert.equal(timingPanel.hidden,false);assert.equal(weightPanel.hidden,true);
+check('five domain tabs replace the mixed Stats destination',()=>{
+  assert.deepEqual([...html.matchAll(/data-page="([^"]+)"/g)].map(match=>match[1]),['home','toileting','care','weight','data']);
+  assert.doesNotMatch(html,/stats-page|stats-chart-tabs|data-stats-chart/);
+  for(const page of ['home','toileting','care','weight','data']) {
+    assert.ok(html.includes(`aria-controls="${page}-page"`));
+    assert.ok(html.includes(`role="tabpanel" aria-labelledby="${page}-page-tab"`));
+  }
 });
 check('no recent accidents show zero and the mobile metric no longer displays an accident-gap median',()=>{
   app.fixture=events.slice(0,3);
@@ -138,7 +139,7 @@ check('no recent accidents show zero and the mobile metric no longer displays an
   assert.doesNotMatch(metric(summary.innerHTML,'Since last accident')[2],/median/i);
 });
 check('existing minute refresh updates elapsed time and rolling rate without changing events',()=>{
-  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);if\(activePage==='stats'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
+  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);if\(activePage==='toileting'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
   const boundaryEvents=[event('history','meal','2026-10-04T12:15'),event('ages-out','wee','2026-10-07T12:15','inside')],before=JSON.stringify(boundaryEvents);
   const first=render(new Date('2026-10-14T12:15:00'),boundaryEvents);
   const elapsed1=metric(first,'Since last accident')[1];

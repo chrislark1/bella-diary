@@ -45,7 +45,7 @@ async function syncChecks() {
   const household='00000000-0000-4000-8000-000000000001', id=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
   const instant='2026-10-07T08:00:00.000Z';
   const event=(n,extra={})=>({id:id(n),type:'wee',datetime:'2026-10-07T08:00',note:'record '+n,location:'outside',createdAt:instant,updatedAt:instant,deletedAt:null,mutationId:'local-'+n,serverVersion:null,syncBaseMutationId:null,...extra});
-  const row=(e,version=1)=>({id:e.id,household_id:household,type:e.type,datetime:e.datetime,note:e.note,location:e.location??null,poo_consistency:e.pooConsistency??null,meal_food:e.mealFood??null,meal_amount:e.mealAmount??null,weight_kg:e.weightKg??null,demo:e.demo===true,client_created_at:e.createdAt,client_updated_at:e.updatedAt,deleted_at:e.deletedAt,mutation_id:e.mutationId,server_version:version});
+  const row=(e,version=1)=>({id:e.id,household_id:household,type:e.type,datetime:e.datetime,note:e.note,location:e.location??null,poo_consistency:e.pooConsistency??null,meal_food:e.mealFood??null,meal_amount:e.mealAmount??null,weight_kg:e.weightKg??null,care_category:e.careCategory??null,care_product:e.careProduct??null,next_due:e.nextDue??null,demo:e.demo===true,client_created_at:e.createdAt,client_updated_at:e.updatedAt,deleted_at:e.deletedAt,mutation_id:e.mutationId,server_version:version});
   await reset();await seedStage2({version:4,householdId:household,demoCleared:true,syncConflicts:[],events:[event(10),event(11,{demo:true}),event(12,{id:'legacy-id'})]},4);
   let frame=await start(syncFixture,true,'https://auth-fixture.invalid',true),win=frame.contentWindow,f=win.cloudFixture,a=win.authFixture;
   const text=()=>frame.contentDocument.getElementById('sync-status').textContent;
@@ -117,6 +117,14 @@ async function syncChecks() {
   win.eval("window.savedAdd=IDBObjectStore.prototype.add;IDBObjectStore.prototype.add=function(value){const req=savedAdd.call(this,value);req.addEventListener('success',()=>this.transaction.abort(),{once:true});return req;};");await run();
   check(same(await databaseContents(),beforeRollback) && text().startsWith('Sync issue'),'K: failed cloud merge rolls back all event and metadata changes');win.eval('IDBObjectStore.prototype.add=savedAdd');await run();
   check((await native()).events[0].id===id(70),'K: rolled-back cloud pull recovers on manual Sync now');
+  const care=event(74,{type:'care',location:undefined,careCategory:'flea',careProduct:'Treatment',nextDue:'2027-01-20'});
+  await replace([care]);f.rows.clear();await run();local=await native();
+  check(f.rows.get(id(74)).care_category==='flea'&&f.rows.get(id(74)).next_due==='2027-01-20'&&local.events[0].serverVersion===1,'K: care actual and override serialize through ordinary versioned sync');
+  const acceptedCare=local.events[0];await replace([]);await run();local=await native();
+  check(local.events[0].careProduct==='Treatment'&&local.events[0].nextDue==='2027-01-20','K: care snapshot deserializes without losing override');
+  await replace([{...acceptedCare,careProduct:'Local treatment',mutationId:'care-local-change'}]);
+  f.rows.set(id(74),row({...acceptedCare,careProduct:'Cloud treatment',mutationId:'care-cloud-change'},2));await run();local=await native();
+  check(local.events[0].careProduct==='Local treatment'&&local.syncConflicts[0].cloud.careProduct==='Cloud treatment'&&local.syncConflicts[0].cloud.nextDue==='2027-01-20','K: care conflicts preserve both actual copies and overrides');
   const localWeight=event(75,{type:'weight',location:undefined,weightKg:7.45});await replace([localWeight]);f.rows.clear();await run();local=await native();
   const weightInsert=f.calls.find(c=>c.op==='insert'&&c.payload.type==='weight');
   check(local.events[0].serverVersion===1&&local.events[0].weightKg===7.45&&weightInsert?.payload.weight_kg===7.45&&weightInsert.payload.location===null,'K: weight uses the existing versioned cloud sync with kg mapping and no toileting fields');
@@ -214,7 +222,7 @@ async function demoRemovalChecks() {
   check(blocked(frame) && same(await databaseContents(),beforeFailure),'N: failed purge rolls back all real/demo rows, conflicts and binding');await reload(frame);
   check(same(state(frame).events,real) && state(frame).householdId===household,'N: failed purge can recover on reload without losing real data');frame.remove();
   await reset();await seedStage2({...mixed,syncConflicts:[]},4);frame=await start(syncFixture,true,'https://auth-fixture.invalid',true);const win=frame.contentWindow,f=win.cloudFixture;
-  const row=e=>({id:e.id,household_id:household,type:e.type,datetime:e.datetime,location:e.location,note:e.note,poo_consistency:null,meal_food:null,meal_amount:null,weight_kg:e.weightKg??null,demo:e.demo===true,client_created_at:e.createdAt,client_updated_at:e.updatedAt,deleted_at:e.deletedAt,mutation_id:e.mutationId,server_version:e.serverVersion});
+  const row=e=>({id:e.id,household_id:household,type:e.type,datetime:e.datetime,location:e.location,note:e.note,poo_consistency:null,meal_food:null,meal_amount:null,weight_kg:e.weightKg??null,care_category:e.careCategory??null,care_product:e.careProduct??null,next_due:e.nextDue??null,demo:e.demo===true,client_created_at:e.createdAt,client_updated_at:e.updatedAt,deleted_at:e.deletedAt,mutation_id:e.mutationId,server_version:e.serverVersion});
   for(const e of [...real,...demos])f.rows.set(e.id,row(e));const cloudBefore=Array.from(f.rows.values());win.authFixture.emit('SIGNED_IN',{id:'fixture-user'});
   await waitFor(()=>frame.contentDocument.getElementById('sync-status').textContent==='Synced','post-purge sync');await win.eval('mutationQueue');
   check(!f.calls.some(c=>c.op!=='select') && same(Array.from(f.rows.values()),cloudBefore),'N: demo removal generates no cloud inserts, updates or deletes; diagnostic rows are untouched');

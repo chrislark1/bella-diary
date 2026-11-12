@@ -3,7 +3,7 @@
 // Bella's small household reconciler. UI still reads/writes only IndexedDB.
 (() => {
   const uuid = id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-  const fields = {pooConsistency:'poo_consistency',mealFood:'meal_food',mealAmount:'meal_amount',weightKg:'weight_kg',
+  const fields = {pooConsistency:'poo_consistency',mealFood:'meal_food',mealAmount:'meal_amount',weightKg:'weight_kg',careCategory:'care_category',careProduct:'care_product',nextDue:'next_due',
     createdAt:'client_created_at',updatedAt:'client_updated_at',deletedAt:'deleted_at',mutationId:'mutation_id'};
   let running = false, queued = false, scheduled = null, controller = null, identity = null, generation = 0, status = '';
   const el = id => document.getElementById(id);

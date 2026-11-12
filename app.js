@@ -3,7 +3,77 @@
 // One store, one filter, one editor. Datetimes are local wall-clock ISO strings.
 const WINDOW_KEY = 'bellaDiary.aggregateWindow';
 const TYPES = ['wee', 'poo', 'meal'];
-const EVENT_TYPES = [...TYPES,'weight'];
+const EVENT_TYPES = [...TYPES,'weight','care'];
+const CARE_DEFAULTS = Object.freeze({worming:1,flea:3,vaccination:null,vet:null,medication:null,other:null});
+function validCareDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y,m,d]=value.split('-').map(Number);
+  return y>=1900 && y<=9999 && m>=1 && m<=12 && d>=1 && d<=new Date(y,m,0).getDate();
+}
+// Calendar months, clamped to the destination month's last day; no elapsed-day approximation.
+function addCareMonths(date,months) {
+  const [y,m,d]=date.split('-').map(Number),target=new Date(y,m-1+months,1,12);
+  target.setDate(Math.min(d,new Date(target.getFullYear(),target.getMonth()+1,0).getDate()));
+  return localDate(target);
+}
+function careProjections(events,now=new Date()) {
+  return Object.entries(CARE_DEFAULTS).flatMap(([category,months])=>{
+    const latest=events.filter(e=>e.type==='care'&&e.careCategory===category&&isActiveEvent(e)&&e.demo!==true&&Date.parse(e.datetime)<=now.getTime()).sort((a,b)=>b.datetime.localeCompare(a.datetime)||a.id.localeCompare(b.id))[0];
+    if (!latest) return [];
+    const due=latest.nextDue || (months ? addCareMonths(dateOf(latest),months) : null);
+    return due ? [{category,due,sourceId:latest.id}] : [];
+  }).sort((a,b)=>a.due.localeCompare(b.due));
+}
+const CARE_SOON_DAYS = 14;
+let selectedCareSource = null;
+function careDueState(due,now=new Date()) {
+  const days=Math.round((Date.parse(due+'T00:00Z')-Date.parse(localDate(now)+'T00:00Z'))/86400000);
+  return {state:days<0?'overdue':days<=CARE_SOON_DAYS?'due-soon':'future',label:days<0?`Overdue by ${-days} day${days===-1?'':'s'}`:days===0?'Due today':`Due in ${days} day${days===1?'':'s'}`};
+}
+function careDayPosition(date) {
+  const [y,m,d]=date.split('-').map(Number);
+  return (d-.5)/new Date(y,m,0).getDate()*100;
+}
+function careMonthLabel(month) {return new Date(month+'-01T12:00').toLocaleDateString('en-GB',{month:'short',year:'numeric'});}
+function careFullDate(date) {return new Date(date+'T12:00').toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});}
+function renderCare(events,now=new Date()) {
+  const projected=careProjections(events,now),history=events.filter(e=>e.type==='care').sort((a,b)=>b.datetime.localeCompare(a.datetime));
+  const dueButton=item=>{const state=careDueState(item.due,now);return `<button class="care-due-item ${state.state}" data-care-source="${escapeHTML(item.sourceId)}">${titleCase(item.category)} · ${escapeHTML(careFullDate(item.due))} · ${state.label}</button>`;};
+  $('care-due').innerHTML=projected.map(dueButton).join('')||'<p class="muted">No next care dates yet.</p>';
+  const upcoming=projected.filter(i=>careDueState(i.due,now).state!=='overdue').slice(0,3);
+  $('home-care-items').innerHTML=[...projected.filter(i=>careDueState(i.due,now).state==='overdue'),...upcoming].map(dueButton).join('')||'<p class="muted">No upcoming care recorded.</p>';
+  // Six contiguous months only; older history and outlying due dates stay accessible below.
+  const first=new Date(now.getFullYear(),now.getMonth()-2,1,12);
+  const months=Array.from({length:6},(_,i)=>localDate(new Date(first.getFullYear(),first.getMonth()+i,1,12)).slice(0,7));
+  const items=[...history.map(e=>({date:dateOf(e),category:e.careCategory,id:e.id,projected:false})),...projected.map(i=>({date:i.due,category:i.category,id:i.sourceId,projected:true}))];
+  const symbols={worming:'W',flea:'F',vaccination:'V',vet:'+',medication:'M',other:'O'};
+  $('care-timeline').innerHTML=months.slice().reverse().map(month=>{
+    const gapPercent=40/Math.max(100,$('care-timeline').clientWidth-134)*100;
+    const occupied=[],marks=items.filter(i=>i.date.startsWith(month)).sort((a,b)=>a.date.localeCompare(b.date)||a.category.localeCompare(b.category)||a.id.localeCompare(b.id)||Number(a.projected)-Number(b.projected)).map(item=>{
+      const x=careDayPosition(item.date);let lane=0;while(occupied[lane]!==undefined&&x-occupied[lane]<gapPercent)lane++;occupied[lane]=x;
+      const state=item.projected?careDueState(item.date,now):null;
+      const label=`${titleCase(item.category)} ${item.projected?'projected due':'completed'} ${careFullDate(item.date)}.${state?' '+state.label+'.':''}`;
+      return `<button class="care-mark ${item.projected?'projected '+state.state:'actual'}" ${item.projected?'data-care-source':'data-id'}="${escapeHTML(item.id)}" style="left:${x}%;top:${lane*36}px" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"><span>${symbols[item.category]}</span></button>`;
+    });
+    const current=month===localDate(now).slice(0,7),last=new Date(Number(month.slice(0,4)),Number(month.slice(5)),0).getDate();
+    return `<div class="care-month${current?' current-month':''}"><strong>${careMonthLabel(month)}</strong><div class="care-month-body"><div class="care-days"><span>1</span><span>Day of month</span><span>${last}</span></div><div class="care-month-plot" style="height:${Math.max(1,occupied.length)*36}px">${current?`<span class="care-today" style="left:${careDayPosition(localDate(now))}%" aria-label="Today ${careFullDate(localDate(now))}"></span>`:''}${marks.join('')}</div></div></div>`;
+  }).join('');
+  $('care-history').innerHTML=history.map(e=>`<p><button data-id="${escapeHTML(e.id)}">${escapeHTML(careFullDate(dateOf(e)))} ${e.datetime.slice(11,16)} · ${escapeHTML(details(e))}</button> ${escapeHTML(e.note)}</p>`).join('') || '<p class="muted">No care recorded yet.</p>';
+  renderCareDetail(projected);
+}
+function renderCareDetail(projected=careProjections(activeEvents())) {
+  const item=projected.find(i=>i.sourceId===selectedCareSource),source=item&&activeEvents().find(e=>e.id===item.sourceId);
+  $('care-detail').hidden=!source;
+  if(!source)return;
+  $('care-detail-text').textContent=`${titleCase(item.category)} projected due ${careFullDate(item.due)}. Based on ${source.careCategory} on ${careFullDate(dateOf(source))}. ${source.nextDue?'Explicit next-due override.':`Default interval: ${CARE_DEFAULTS[source.careCategory]} months.`}`;
+}
+function showCareProjection(id) {
+  selectedCareSource=id;selectPage('care');$('care-detail').focus();openCareSourceEditor(id);
+}
+function openCareSourceEditor(id) {
+  openEditor(id);$('event-form').elements.nextDue.focus();
+  $('event-form').elements.nextDue.scrollIntoView({block:'center',behavior:'smooth'});
+}
 const isToiletingEvent = event => TYPES.includes(event.type);
 const CONSISTENCIES = ['Firm', 'Normal', 'Soft', 'Diarrhoea'];
 const MIN_SAMPLES = 3;
@@ -89,7 +159,14 @@ function validateEvents(input) {
     const event = {id:raw.id, type:raw.type, datetime, note:''};
     const text = (key, limit) => {if (raw[key] == null) return ''; if (typeof raw[key] !== 'string' || raw[key].length > limit) throw new Error(`Invalid ${key} field.`); return raw[key];};
     event.note = text('note', 2000);
-    if (raw.type === 'weight') {
+    if (raw.type === 'care') {
+      if (typeof raw.careCategory !== 'string' || !Object.prototype.hasOwnProperty.call(CARE_DEFAULTS,raw.careCategory)) throw new Error('Invalid care category.');
+      event.careCategory=raw.careCategory;
+      event.careProduct=text('careProduct',200);
+      event.nextDue=raw.nextDue || null;
+      if (raw.nextDue != null && raw.nextDue !== '' && !validCareDate(raw.nextDue)) throw new Error('Invalid next due date.');
+    }
+    else if (raw.type === 'weight') {
       if (typeof raw.weightKg !== 'number' || !Number.isFinite(raw.weightKg) || raw.weightKg <= 0 || raw.weightKg > 100) throw new Error('Weight must be a number greater than 0 and no more than 100 kg.');
       event.weightKg = raw.weightKg;
     }
@@ -121,7 +198,7 @@ function validateEvents(input) {
 
 let store = {version:4, householdId:null, demoCleared:true, events:[], syncConflicts:[]};
 let discoveredHousehold = null, diaryLoaded = false;
-let activeFilter = 'all', activeTab = 'timeline', activePage = 'diary', activeWindow = '14', activeBinSize = 60, hasBinSizePreference = false, timingView = 'over-time', statsChartMode = 'timing', editingId = null, messageTimer;
+let activeFilter = 'all', activePage = 'toileting', activeWindow = '14', activeBinSize = 60, hasBinSizePreference = false, timingView = 'over-time', editingId = null, messageTimer;
 let timingMetrics=new Set(['wee','poo']);
 let storageBlocked = false;
 let mutationQueue = Promise.resolve();
@@ -254,6 +331,7 @@ function accidentFreeTime(events,now=new Date()) {
 }
 
 function details(event) {
+  if (event.type === 'care') return [titleCase(event.careCategory),event.careProduct,event.nextDue?'Next due '+event.nextDue:''].filter(Boolean).join(' · ');
   if (event.type === 'weight') return formatWeight(event.weightKg);
   if (event.type === 'meal') return [event.mealFood, event.mealAmount].filter(Boolean).join(' · ') || 'Meal';
   return [accident(event) ? 'Inside accident' : 'Outside', event.pooConsistency].filter(Boolean).join(' · ');
@@ -339,25 +417,28 @@ function currentTimePercent(now = new Date()) {return (now.getHours()*60+now.get
 
 function updateNowMarker(now = new Date()) {
   const percent=currentTimePercent(now), minute=now.getHours()*60+now.getMinutes(), nearest=Math.round(minute/240)*240;
-  document.querySelectorAll('#aggregate .aggregate-now, #timeline .timeline-now').forEach(line => {line.style.left=`${percent}%`;});
-  document.querySelectorAll('#aggregate [data-now-axis-label], #timeline [data-now-axis-label]').forEach(label => {label.style.left=`${percent}%`;label.classList.toggle('near-tick',Math.abs(minute-nearest)<60);});
-  $('timeline').setAttribute('aria-label',`Diary timeline. Current time ${localTime(now)}.`);
+  document.querySelectorAll('#aggregate .aggregate-now, #timeline .timeline-now, #today-timeline .timeline-now').forEach(line => {line.style.left=`${percent}%`;});
+  document.querySelectorAll('#aggregate [data-now-axis-label], #timeline [data-now-axis-label], #today-timeline [data-now-axis-label]').forEach(label => {label.style.left=`${percent}%`;label.classList.toggle('near-tick',Math.abs(minute-nearest)<60);});
+  $('timeline').setAttribute('aria-label',`Toileting history. Current time ${localTime(now)}.`);
+  $('today-timeline').setAttribute('aria-label',`Today’s toilet timeline. Current time ${localTime(now)}.`);
 }
 
-function renderTimeline(events, allEvents, now = new Date()) {
+function renderTimeline(events, allEvents, now = new Date(), targetId = 'timeline', todayOnly = false) {
   events=events.filter(isToiletingEvent);allEvents=allEvents.filter(isToiletingEvent);
-  const dates = [...new Set(allEvents.map(dateOf))].sort().reverse();
+  if (todayOnly) {events=events.filter(event=>dateOf(event)===localDate(now)).sort((a,b)=>b.datetime.localeCompare(a.datetime));allEvents=allEvents.filter(event=>dateOf(event)===localDate(now));}
+  const target=$(targetId);
+  const dates = todayOnly ? [localDate(now)] : [...new Set(allEvents.map(dateOf))].sort().reverse();
   const groups = new Map(dates.map(date => [date,[]]));
   const totals = new Map(dates.map(date => [date,{...Object.fromEntries(TYPES.map(type => [type,0])),accidents:0}]));
   allEvents.forEach(event => {const day=totals.get(dateOf(event));day[event.type]++;if(accident(event))day.accidents++;});
   events.forEach(event => groups.get(dateOf(event)).push(event));
-  $('timeline').innerHTML = axisHTML(now) + (dates.length ? dates.map(date => {
+  target.innerHTML = axisHTML(now) + (dates.length ? dates.map(date => {
     const dayEvents = groups.get(date);
     const dayCounts = totals.get(date);
     const summaryLabel = `${dayCounts.wee} ${dayCounts.wee === 1 ? 'wee' : 'wees'}, ${dayCounts.poo} ${dayCounts.poo === 1 ? 'poo' : 'poos'}, ${dayCounts.meal} ${dayCounts.meal === 1 ? 'meal' : 'meals'}, ${dayCounts.accidents} ${dayCounts.accidents === 1 ? 'accident' : 'accidents'}`;
     return `<div class="time-row ${date === localDate(now) ? 'today' : ''}"><div class="date-label"><span class="day-date">${shortDate(date)}</span><span class="day-summary" role="img" aria-label="${summaryLabel}">${TYPES.map(type => `<span class="day-count"><span class="symbol ${type}" aria-hidden="true"></span><span aria-hidden="true">${dayCounts[type]}</span></span>`).join('')}<span class="day-count"><i class="accident-example" aria-hidden="true">!</i><span aria-hidden="true">${dayCounts.accidents}</span></span></span></div><div class="plot"><span class="timeline-now" style="left:${currentTimePercent(now)}%" aria-hidden="true"></span>${dayEvents.slice().reverse().map(event => markHTML(event)).join('')}</div></div>`;
   }).join('') : '<p class="empty">A fresh start for Bella. Tap + Wee, + Poo or + Meal to begin.</p>');
-  if (dates.length && !events.length) $('timeline').insertAdjacentHTML('beforeend','<p class="empty">No events match this filter.</p>');
+  if (dates.length && !events.length) target.insertAdjacentHTML('beforeend',`<p class="empty">${todayOnly ? 'No toilet or meal entries today yet.' : 'No events match this filter.'}</p>`);
   updateNowMarker(now);
 }
 
@@ -448,16 +529,11 @@ function statistics(events,now=new Date()) {
 function renderStats(events,now=new Date()) {
   const s = statistics(events,now);
   const rate7d=s.accidentRate7d===null?'—':s.accidentRate7d.toFixed(1);
-  const weights=weightSummary(events);
-  const elapsedDays=weights.previous?(Date.parse(weights.latest.datetime)-Date.parse(weights.previous.datetime))/86400000:0;
-  const weightRate=elapsedDays>0?formatWeightRate((weights.latest.weightKg-weights.previous.weightKg)/elapsedDays*7):'—';
   const groups = [
     ['Frequency', [['Wees / day',s.frequency('wee')],['Poos / day',s.frequency('poo')],['Meals / day',s.frequency('meal')],['Accidents / day',s.frequency('accidents')],['Accidents / 24h (last 7d)',rate7d],['Wee accidents (7 days)',s.accidentPercent('wee')],['Poo accidents (7 days)',s.accidentPercent('poo')],['Accident-free streak',accidentFreeTime(events,now).value]]],
-    ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Median wee accident gap',compactDuration(s.weeAccidentGap)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]],
-    ['Weight', [['Latest weight',weights.latest?formatWeight(weights.latest.weightKg):'—'],['Average growth rate',weightRate]]]
+    ['Timing', [['Median wee interval',duration(s.interval)],['Median poo interval',duration(s.pooInterval)],['Median wee accident gap',compactDuration(s.weeAccidentGap)],['Longest daytime gap',duration(s.daytime)],['Longest overnight gap',duration(s.overnight)],['Typical first wee',clockTime(s.firstWee)],['Typical first poo',clockTime(s.firstPoo)],['Typical meals',s.mealTimes.every(v => v !== null) ? s.mealTimes.map(clockTime).join(' · ') : '—']]]
   ];
   $('stats').innerHTML = groups.map(([heading,rows]) => `<div><h3>${heading}</h3>${rows.map(([label,value]) => `<div class="stat-line"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`).join('');
-  renderWeightChart(weights.records);
 }
 
 function weightSummary(events) {
@@ -466,11 +542,17 @@ function weightSummary(events) {
   return {records,latest,previous};
 }
 
-function renderStatsChartMode() {
-  const timing=statsChartMode==='timing';
-  $('timing-chart-panel').hidden=!timing;
-  $('weight-chart-panel').hidden=timing;
-  document.querySelectorAll('[data-stats-chart]').forEach(button=>{const selected=button.dataset.statsChart===statsChartMode;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;});
+// Home and Weight share the same latest-record selection and formatting.
+function latestWeightHTML(latest) {
+  return latest ? `<strong class="latest-weight">${formatWeight(latest.weightKg)}</strong><p class="muted">Recorded <time datetime="${escapeHTML(latest.datetime)}">${shortDate(dateOf(latest))}</time></p>` : '<p class="muted">No weights recorded yet.</p>';
+}
+
+function renderWeight(weights) {
+  const elapsedDays=weights.previous?(Date.parse(weights.latest.datetime)-Date.parse(weights.previous.datetime))/86400000:0;
+  const weightRate=elapsedDays>0?formatWeightRate((weights.latest.weightKg-weights.previous.weightKg)/elapsedDays*7):'—';
+  $('home-weight-summary').innerHTML=latestWeightHTML(weights.latest);
+  $('weight-summary').innerHTML=latestWeightHTML(weights.latest)+`<div class="stat-line"><span>Average growth rate</span><strong>${weightRate}</strong></div><p class="muted">Change per week between the two latest weighings.</p>`;
+  renderWeightChart(weights.records);
 }
 
 function renderWeightChart(records) {
@@ -746,26 +828,37 @@ function renderTimingChart(events,now=new Date()) {
 
 function render(now=new Date()) {
   const allEvents = activeEvents(), events = filteredEvents(allEvents);
-  renderHeader(allEvents,now); renderAggregate(allEvents,now); renderTimeline(events,allEvents,now); renderTable(events); renderStats(allEvents,now);
-  $('timeline').hidden = activeTab !== 'timeline'; $('data').hidden = activeTab !== 'data';
-  $('diary-page').hidden = activePage !== 'diary'; $('stats-page').hidden = activePage !== 'stats';
-  if (activePage==='stats') renderTimingChart(allEvents,now);
-  document.querySelectorAll('[data-page]').forEach(button => {const selected = button.dataset.page === activePage; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
-  document.querySelectorAll('[data-filter]').forEach(button => {button.hidden=button.dataset.filter==='weight'&&activeTab!=='data';button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter));});
-  document.querySelectorAll('[data-tab]').forEach(button => {const selected = button.dataset.tab === activeTab; button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;});
+  document.querySelectorAll('[data-page]').forEach(button => {
+    const selected = button.dataset.page === activePage;
+    button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;
+    $(button.getAttribute('aria-controls')).hidden = !selected;
+  });
+  renderHeader(allEvents,now); renderAggregate(allEvents,now);
+  renderTimeline(events,allEvents,now);
+  renderTimeline(allEvents,allEvents,now,'today-timeline',true);
+  renderCare(allEvents,now); renderTable(events); renderStats(allEvents,now); renderWeight(weightSummary(allEvents));
+  if (activePage==='toileting') renderTimingChart(allEvents,now);
+  document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter)));
+}
+
+function selectPage(page) {
+  activePage = page;
+  if (page === 'toileting' && ['weight','care'].includes(activeFilter)) activeFilter = 'all';
+  render();
 }
 
 async function quickAdd(type, location = 'outside') {
   const event = {id:uniqueId(),type,datetime:localDatetime(new Date()),note:'', ...eventMetadata()};
   if (type === 'meal') {event.mealFood = ''; event.mealAmount = '';}
   else {event.location = location; if (type === 'poo') event.pooConsistency = 'Normal';}
-  const visible = activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
+  const visible = activePage === 'home' || activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
   if (await commit(events => [...events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
 }
 
 function editorFields() {
   const type = $('event-form').elements.type.value;
-  $('location-field').hidden = type === 'meal' || type === 'weight'; $('consistency-field').hidden = type !== 'poo'; $('meal-fields').hidden = type !== 'meal';
+  $('location-field').hidden = type === 'meal' || type === 'weight' || type === 'care'; $('consistency-field').hidden = type !== 'poo'; $('meal-fields').hidden = type !== 'meal';
+  $('care-fields').hidden=type !== 'care';
   $('weight-field').hidden = type !== 'weight'; $('event-form').elements.weightKg.required = type === 'weight';
 }
 
@@ -775,7 +868,7 @@ function openEditor(id = null) {
   editingId = id;
   const form = $('event-form'); form.reset();
   const data = event || {type:'wee',datetime:localDatetime(new Date()), location:'outside',pooConsistency:'Normal'};
-  for (const key of ['type','location','pooConsistency','mealFood','mealAmount','weightKg','note']) if (data[key] != null) form.elements[key].value = data[key];
+  for (const key of ['type','location','pooConsistency','mealFood','mealAmount','weightKg','careCategory','careProduct','nextDue','note']) if (data[key] != null) form.elements[key].value = data[key];
   form.elements.date.value = dateOf(data); form.elements.time.value = data.datetime.slice(11,16);
   $('editor-title').textContent = id ? 'Edit entry' : 'Custom entry'; $('delete-event').hidden = !id;
   editorFields(); $('editor').showModal();
@@ -785,7 +878,8 @@ async function saveEditor(event) {
   event.preventDefault();
   const form = $('event-form'), value = key => form.elements[key].value;
   const entry = {id:editingId || uniqueId(),type:value('type'),datetime:`${value('date')}T${value('time')}`,note:value('note'), ...eventMetadata()};
-  if (entry.type === 'weight') entry.weightKg = Number(value('weightKg'));
+  if (entry.type === 'care') {entry.careCategory=value('careCategory');entry.careProduct=value('careProduct');entry.nextDue=value('nextDue')||null;}
+  else if (entry.type === 'weight') entry.weightKg = Number(value('weightKg'));
   else if (entry.type === 'meal') {entry.mealFood = value('mealFood'); entry.mealAmount = value('mealAmount');}
   else {entry.location = value('location'); if (entry.type === 'poo') entry.pooConsistency = value('pooConsistency');}
   // Preserve existing creation metadata and accepted sync baseline.
@@ -806,7 +900,7 @@ function download(filename,content,type) {
 function exportJSON() {download(`bellas-diary-${localDate(new Date())}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),demoCleared:store.demoCleared,events:store.events,...(store.syncConflicts.length ? {syncConflicts:store.syncConflicts} : {})},null,2),'application/json');}
 
 function exportCSV() {
-  const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','weightKg','note'];
+  const keys = ['id','datetime','date','time','type','location','pooConsistency','mealFood','mealAmount','weightKg','note','careCategory','careProduct','nextDue'];
   // Guard against spreadsheet formula execution while retaining a readable text value.
   const cell = value => {let s = String(value ?? ''); if (/^[\s]*[=+@-]/.test(s)) s = "'"+s; return '"'+s.replace(/"/g,'""')+'"';};
   const lines = [keys.join(','), ...[...activeEvents()].sort((a,b) => b.datetime.localeCompare(a.datetime)).map(event => keys.map(key => cell(key === 'date' ? dateOf(event) : key === 'time' ? event.datetime.slice(11,16) : event[key])).join(','))];
@@ -849,16 +943,6 @@ function connectEvents() {
     const view=event.target.closest('[data-chart-view]');
     if (view) {timingView=view.dataset.chartView;renderTimingChart(activeEvents());}
   });
-  $('stats-chart-tabs').addEventListener('click',event=>{
-    const tab=event.target.closest('[data-stats-chart]');
-    if(tab){statsChartMode=tab.dataset.statsChart;renderStatsChartMode();if(statsChartMode==='timing')renderTimingChart(activeEvents());}
-  });
-  $('stats-chart-tabs').addEventListener('keydown',event=>{
-    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
-    event.preventDefault();
-    const next=event.key==='Home'?'timing':event.key==='End'?'weight':statsChartMode==='timing'?'weight':'timing';
-    statsChartMode=next;renderStatsChartMode();if(next==='timing')renderTimingChart(activeEvents());$(`[data-stats-chart="${next}"]`).focus();
-  });
   $('timing-chart-controls').addEventListener('change',event=>{
     const input=event.target.closest('[data-chart-filter]');
     if (!input) return;
@@ -876,17 +960,27 @@ function connectEvents() {
   $('more-menu').addEventListener('click',event => {if (event.target.closest('button') && !event.target.closest('#cloud-account')) setTimeout(() => {$('more-menu').open = false;},0);});
   document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click',() => quickAdd(button.dataset.add,button.dataset.location || 'outside')));
   $('aggregate').addEventListener('click',event => {const bucket = event.target.closest('[data-bucket-label]'); if (bucket) notify(bucket.dataset.bucketLabel);});
-  document.querySelectorAll('[data-page]').forEach(button => {
-    button.addEventListener('click',() => {activePage = button.dataset.page; render();});
-    button.addEventListener('keydown',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault(); activePage = event.key === 'Home' ? 'diary' : event.key === 'End' ? 'stats' : activePage === 'diary' ? 'stats' : 'diary'; render(); $(`${activePage}-page-tab`).focus();}});
+  const pageTabs = [...document.querySelectorAll('[data-page]')];
+  pageTabs.forEach((button,index) => {
+    button.addEventListener('click',() => selectPage(button.dataset.page));
+    button.addEventListener('keydown',event => {
+      if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? pageTabs.length-1 : (index+(event.key==='ArrowRight'?1:-1)+pageTabs.length)%pageTabs.length;
+      selectPage(pageTabs[next].dataset.page); pageTabs[next].focus();
+    });
   });
   $('custom').addEventListener('click',() => openEditor());
-  $('filters').addEventListener('click',event => {const button = event.target.closest('[data-filter]'); if (button) {activeFilter = button.dataset.filter; render();}});
-  document.querySelectorAll('[data-tab]').forEach(button => {
-    button.addEventListener('click',() => {activeTab = button.dataset.tab;if(activeTab==='timeline'&&activeFilter==='weight')activeFilter='all';render();});
-    button.addEventListener('keydown',event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault(); activeTab = event.key === 'Home' ? 'timeline' : event.key === 'End' ? 'data' : activeTab === 'timeline' ? 'data' : 'timeline';if(activeTab==='timeline'&&activeFilter==='weight')activeFilter='all';render(); $(`${activeTab}-tab`).focus();}});
+  for(const id of ['care-timeline','care-due','home-care-items']) $(id).addEventListener('click',event=>{const target=event.target.closest('[data-care-source]');if(target)showCareProjection(target.dataset.careSource);});
+  $('care-timeline').addEventListener('focusin',event=>{const target=event.target.closest('[data-care-source]');if(target){selectedCareSource=target.dataset.careSource;renderCareDetail();}});
+  $('adjust-care-due').addEventListener('click',()=>{openEditor(selectedCareSource);$('event-form').elements.nextDue.focus();});
+  $('complete-care').addEventListener('click',()=>{const source=activeEvents().find(e=>e.id===selectedCareSource);if(!source)return;openEditor();$('event-form').elements.type.value='care';$('event-form').elements.careCategory.value=source.careCategory;editorFields();});
+  $('record-care').addEventListener('click',()=>{openEditor();$('event-form').elements.type.value='care';editorFields();});
+  $('record-weight').addEventListener('click',() => {
+    openEditor(); $('event-form').elements.type.value = 'weight'; editorFields(); $('event-form').elements.weightKg.focus();
   });
-  for (const id of ['timeline','data']) $(id).addEventListener('click',event => {const entry = event.target.closest('[data-id]'); if (entry) openEditor(entry.dataset.id);});
+  document.querySelectorAll('[data-event-filters]').forEach(filters => filters.addEventListener('click',event => {const button = event.target.closest('[data-filter]'); if (button) {activeFilter = button.dataset.filter; render();}}));
+  for (const id of ['today-timeline','timeline','data','care-history','care-timeline']) $(id).addEventListener('click',event => {const entry = event.target.closest('[data-id]'); if (entry) openEditor(entry.dataset.id);});
   $('event-form').elements.type.addEventListener('change',editorFields);
   $('event-form').addEventListener('submit',saveEditor);
   for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click',() => $('editor').close());
@@ -899,10 +993,10 @@ function connectEvents() {
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
-  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);if(activePage==='stats'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
+  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);if(activePage==='toileting'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
 }
 
-const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The primary accident rate uses the trailing 7 days, normalized to accidents per 24 hours. It appears only after the diary has a full 7-day history window and updates as events age out. The median wee accident gap in Stats and Ordered view is the overall historical median; the Over-time trend is the median of the last 5 completed gaps.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its Over-time trend uses the median of up to the last 5 completed gaps, requiring at least three observations. Ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
+const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The primary accident rate uses the trailing 7 days, normalized to accidents per 24 hours. It appears only after the diary has a full 7-day history window and updates as events age out. The median wee accident gap in Toileting statistics and Ordered view is the overall historical median; the Over-time trend is the median of the last 5 completed gaps.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its Over-time trend uses the median of up to the last 5 completed gaps, requiring at least three observations. Ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';
 
 async function setupOffline() {
   if (!('serviceWorker' in navigator)) {$('offline-status').textContent = 'Offline caching is unavailable in this browser.'; return;}

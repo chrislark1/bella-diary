@@ -148,7 +148,7 @@ async function run() {
   const today=frame.contentWindow.eval('localDate(new Date())');
   const pastDate=days=>frame.contentWindow.eval(`(()=>{const d=new Date('${today}T12:00');d.setDate(d.getDate()-${days});return localDate(d);})()`);
   const addWeight=async(date,value)=>{await click(frame,'#custom');const f=frame.contentDocument.getElementById('event-form'),type=f.elements.type;type.value='weight';type.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));f.elements.date.value=date;f.elements.time.value='09:30';f.elements.weightKg.value=String(value);await click(frame,'#event-form button[type="submit"]');return state(frame).events.at(-1);};
-  check(!frame.contentDocument.querySelector('[data-add="weight"]')&&Array.from(frame.contentDocument.querySelectorAll('#event-form [name="type"] option')).some(option=>option.value==='weight'),'B: Weight is a Custom entry type with no quick-add control');
+  check(!frame.contentDocument.querySelector('[data-add="weight"]')&&Array.from(frame.contentDocument.querySelectorAll('#event-form [name="type"] option')).some(option=>option.value==='weight'),'B: Weight remains a Custom entry type and never saves without a weight value');
   await click(frame,'#custom');let weightForm=frame.contentDocument.getElementById('event-form');weightForm.elements.type.value='weight';weightForm.elements.type.dispatchEvent(new frame.contentWindow.Event('change',{bubbles:true}));
   check(!frame.contentDocument.getElementById('weight-field').hidden&&frame.contentDocument.getElementById('weight-field').querySelector('input').required&&frame.contentDocument.getElementById('location-field').hidden&&frame.contentDocument.getElementById('consistency-field').hidden&&frame.contentDocument.getElementById('meal-fields').hidden,'B: Weight editor requires kg and hides irrelevant event fields');frame.contentDocument.getElementById('cancel-editor').click();
   const firstWeight=await addWeight(pastDate(14),6.4),secondWeight=await addWeight(pastDate(7),7.2),latestWeight=await addWeight(today,7.45);
@@ -158,16 +158,16 @@ async function run() {
   const weightValidBase=latestWeight;
   for(const invalidValue of [0,-1,101,'7.45']){const invalid={...weightValidBase,id:`invalid-${invalidValue}`,weightKg:invalidValue};const rejected=frame.contentWindow.eval(`(()=>{try{validateEvents([${JSON.stringify(invalid)}]);return false;}catch{return true;}})()`);check(rejected,`B: invalid weight ${invalidValue} is rejected`);}
   await reload(frame);
-  check(same(frame.contentWindow.eval('weightSummary(activeEvents())').records.map(event=>event.id),[firstWeight.id,secondWeight.id,latestWeight.id])&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Stats chart persists weights in chronological date order');
-  const statsWeightText=frame.contentDocument.getElementById('stats').textContent;
-  check(statsWeightText.includes('Latest weight7.45 kg')&&statsWeightText.includes('Average growth rate+0.25 kg/week')&&!statsWeightText.includes('After a meal'),'B: numeric Statistics replaces After a meal with latest weight and growth rate');
-  check(!frame.contentDocument.getElementById('timing-chart-panel').hidden&&frame.contentDocument.getElementById('weight-chart-panel').hidden&&frame.contentDocument.getElementById('timing-chart-tab').getAttribute('aria-selected')==='true','B: timing observations is the default Stats chart tab');
-  await click(frame,'#weight-chart-tab');
-  check(frame.contentDocument.getElementById('timing-chart-panel').hidden&&!frame.contentDocument.getElementById('weight-chart-panel').hidden&&frame.contentDocument.getElementById('weight-chart-tab').getAttribute('aria-selected')==='true'&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Weight tab replaces the timing chart and shows its trend');
-  await click(frame,'#timing-chart-tab');
+  check(same(frame.contentWindow.eval('weightSummary(activeEvents())').records.map(event=>event.id),[firstWeight.id,secondWeight.id,latestWeight.id])&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Weight chart persists weights in chronological date order');
+  const statsWeightText=frame.contentDocument.getElementById('weight-summary').textContent;
+  check(statsWeightText.includes('7.45 kg')&&statsWeightText.includes('Average growth rate+0.25 kg/week')&&!frame.contentDocument.getElementById('stats').textContent.includes('Weight'),'B: dedicated Weight summary retains latest weight and growth rate, separate from toileting');
+  check(!frame.contentDocument.getElementById('home-page').hidden&&frame.contentDocument.getElementById('home-weight-summary').textContent.includes('7.45 kg'),'B: Home is the default destination with the latest weight');
+  await click(frame,'#weight-page-tab');
+  check(frame.contentDocument.getElementById('toileting-page').hidden&&!frame.contentDocument.getElementById('weight-page').hidden&&frame.contentDocument.getElementById('weight-page-tab').getAttribute('aria-selected')==='true'&&frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===3,'B: Weight destination shows its existing trend');
+  await click(frame,'#toileting-page-tab');
   frame.contentWindow.eval(`renderWeightChart([weightSummary(activeEvents()).latest])`);
   check(frame.contentDocument.querySelectorAll('#weight-chart-plot .weight-point').length===1&&frame.contentDocument.querySelector('#weight-chart-plot .weight-point').getAttribute('aria-label').includes('7.45 kilograms'),'B: a single weighing renders one accessible chart point');
-  frame.contentWindow.eval('render()');await click(frame,'#data-tab');
+  frame.contentWindow.eval('render()');await click(frame,'#data-page-tab');
   check(!frame.contentDocument.querySelector('[data-filter="weight"]').hidden,'B: Weight filter appears in Data only');
   await click(frame,'[data-filter="weight"]');
   check(frame.contentDocument.querySelectorAll('#data tbody tr').length===3&&frame.contentDocument.querySelector('#data tbody tr td:nth-child(3)').textContent.includes('7.45 kg'),'B: Data filter and details show weight records');
@@ -180,7 +180,7 @@ async function run() {
   frame.contentDocument.getElementById('more-menu').open=true;await click(frame,'#export-json');frame.contentDocument.getElementById('more-menu').open=true;await click(frame,'#export-csv');weightWin.HTMLAnchorElement.prototype.click=weightClick;
   const weightJson=JSON.parse(await weightDownloads[0].text),weightCsv=await weightDownloads[1].text;
   check(weightJson.events.some(event=>event.type==='weight'&&event.weightKg===6.5)&&weightJson.events.some(event=>event.type==='weight'&&event.deletedAt!==null),'B: JSON backup preserves weight values and tombstones');
-  check(weightCsv.includes('mealAmount,weightKg,note\r\n')&&weightCsv.includes('"6.5"')&&!weightCsv.includes(`"${secondWeight.id}"`),'B: CSV includes active weight values and excludes tombstones');
+  check(weightCsv.includes('mealAmount,weightKg,note,careCategory,careProduct,nextDue\r\n')&&weightCsv.includes('"6.5"')&&!weightCsv.includes(`"${secondWeight.id}"`),'B: CSV includes active weight values and excludes tombstones');
   await importBackup(frame,weightJson);await reload(frame);
   check(same(state(frame),weightBackup),'B: JSON import/restore preserves weight events and tombstones');
   starting[1].remove();await reset();frame=await start();await waitFor(()=>frame.contentWindow.eval('diaryLoaded')===true,'weight fixture reset startup');
@@ -239,10 +239,11 @@ async function run() {
   win.HTMLAnchorElement.prototype.click=originalClick;
   const json=JSON.parse(await downloads[0].text), csv=await downloads[1].text;
   check(downloads[0].name.endsWith('.json') && same(Object.keys(json),['version','exportedAt','demoCleared','events']) && json.version===2 && json.demoCleared===exportState.demoCleared && same(json.events,exportState.events),'C: JSON v2 export preserves metadata, tombstones and event order');
-  check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,weightKg,note\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
+  check(downloads[1].name.endsWith('.csv') && csv.startsWith('id,datetime,date,time,type,location,pooConsistency,mealFood,mealAmount,weightKg,note,careCategory,careProduct,nextDue\r\n') && csv.includes('"Kibble"'),'C: CSV export preserves columns and quoted fields');
   check(!csv.includes('m-poo') && csv.includes('z-wee'),'C: CSV excludes tombstones while keeping active events');
   await importBackup(frame,json);await reload(frame);check(same(state(frame),exportState),'C: actual JSON export restores losslessly');
   await importBackup(frame,{version:2,demoCleared:imported.demoCleared,events:imported.events});
+  await click(frame,'#toileting-page-tab');
   await click(frame,'[data-filter="wee"]'); check(frame.contentDocument.querySelectorAll('#timeline .event-mark').length===1,'C: timeline filter still works');
   const dayTotals=()=>Array.from(frame.contentDocument.querySelectorAll('#timeline .day-summary')).map(group=>Array.from(group.querySelectorAll('.day-count')).map(cell=>cell.querySelector('span[aria-hidden="true"]:last-child').textContent.trim()));
   check(same(dayTotals(),[['0','1','1','1'],['1','0','0','0']]),'C: daily icon totals include all active types independently of the diary filter');
@@ -258,9 +259,9 @@ async function run() {
   check(frame.contentDocument.querySelector('.section-title-controls h2').textContent==='Timing Summary' && frame.contentDocument.querySelector('.section-title-controls #aggregate-window') && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('.aggregate-controls label')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate-count')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('.bucket-help')).display==='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate-window')).display!=='none' && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate-bin-size')).display!=='none','C: phone timing summary keeps both compact selectors beside its title');
   frame.style.width='';
 
-  await click(frame,'#data-tab'); check(!frame.contentDocument.getElementById('data').hidden && frame.contentDocument.querySelectorAll('#data tbody tr').length===1,'C: Data shares filter and event store');
-  await click(frame,'#stats-page-tab'); check(!frame.contentDocument.getElementById('stats-page').hidden,'C: Stats still switches independently');
-  await click(frame,'#diary-page-tab'); check(frame.contentDocument.querySelector('[data-filter="wee"]').getAttribute('aria-pressed')==='true' && !frame.contentDocument.getElementById('data').hidden,'C: returning to Diary preserves view and filter');
+  await click(frame,'#data-page-tab'); check(!frame.contentDocument.getElementById('data').hidden && frame.contentDocument.querySelectorAll('#data tbody tr').length===1,'C: Data shares filter and event store');
+  await click(frame,'#weight-page-tab'); check(!frame.contentDocument.getElementById('weight-page').hidden,'C: Weight switches independently');
+  await click(frame,'#toileting-page-tab'); check(frame.contentDocument.querySelector('[data-filter="wee"]').getAttribute('aria-pressed')==='true' && !frame.contentDocument.getElementById('toileting-page').hidden,'C: returning to Toileting preserves the shared event filter');
   const preference=frame.contentDocument.getElementById('aggregate-window'); preference.value='7';preference.dispatchEvent(new win.Event('change',{bubbles:true}));await reload(frame);
   check(localStorage.getItem('bellaDiary.aggregateWindow')==='7' && frame.contentDocument.getElementById('aggregate-window').value==='7','C: aggregate-window preference stays in localStorage');
   localStorage.setItem('bellaDiary.aggregateBinSize','invalid'); await reload(frame);
@@ -275,6 +276,7 @@ async function run() {
   check(mealBuckets[15].getAttribute('aria-label').startsWith('Meals, 07:30–08:00'),'C: 07:30 meal maps to its correct half-hour bucket');
   const normalized=frame.contentWindow.eval(`(()=>{const rows=bucketDistribution([{type:'wee',datetime:'2026-10-01T08:01'},{type:'wee',datetime:'2026-10-01T08:20'},{type:'wee',datetime:'2026-10-02T09:01'}],'wee',2,30);return [rows[16],rows[18]].map(({count,days,percent,strength,total,diaryDays})=>({count,days,percent,strength,total,diaryDays}));})()`);
   check(same(normalized,[{count:2,days:1,percent:67,strength:1,total:3,diaryDays:2},{count:1,days:1,percent:33,strength:.5,total:3,diaryDays:2}]),'C: bucket counts and day shares stay intact while shading is relative to each row peak');
+  await click(frame,'#toileting-page-tab');
   const binPlot=frame.contentDocument.querySelector('#aggregate .bucket-strip').getBoundingClientRect(),binAxis=frame.contentDocument.querySelector('#aggregate .axis').getBoundingClientRect();
   check(Math.abs(binPlot.left-binAxis.left)<1 && Math.abs(binPlot.right-binAxis.right)<1 && frame.contentWindow.getComputedStyle(frame.contentDocument.querySelector('#aggregate .bucket-strip')).gridTemplateColumns.split(' ').length===48,'C: 48 buckets retain the same full-width 00–24 geometry');
   check(same(state(frame),diaryBeforeBins),'C: changing bucket size does not mutate diary data');
@@ -329,9 +331,10 @@ async function run() {
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
   const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
-  await waitFor(async()=>{const cache=await caches.open('bellas-diary-shell-v49');const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
-  const cache=await caches.open('bellas-diary-shell-v49'), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
-  check(required.every(path=>keys.includes(path)),'E: v49 cache includes every static shell file');
+  const shellVersion=(await (await fetch('../sw.js')).text()).match(/const CACHE = '([^']+)'/)[1];
+  await waitFor(async()=>{const cache=await caches.open(shellVersion);const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
+  const cache=await caches.open(shellVersion), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);
+  check(required.every(path=>keys.includes(path)),'E: current cache includes every static shell file');
   check(keys.every(path=>required.includes(path)),'E: service worker caches shell only, not diary or tests');
   // Strict current schema: no implicit legacy defaults or invalid instants/order.
   const valid=state(frame).events[0];
@@ -360,6 +363,9 @@ async function run() {
   await modelChecks(frame);
   await syncChecks();
   await decisionSupportChecks();
+  await domainChecks();
+  await careChecks();
+  await careTimelineChecks();
   frame=await start();
   onlineFrame=frame; document.getElementById('offline').hidden=false;
   results.textContent+='\nREADY FOR OFFLINE: Stop the disposable HTTP server, then click the offline checks button.';

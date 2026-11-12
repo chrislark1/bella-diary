@@ -5,7 +5,7 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),asse
 const timeline={innerHTML:'',setAttribute(){},insertAdjacentHTML(){}};
 const app=vm.createContext({});
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../app.js'),'utf8'),app);
-app.document={getElementById:id=>id==='timeline'?timeline:null,querySelectorAll:()=>[]};
+app.document={getElementById:id=>id==='timeline'||id==='today-timeline'?timeline:null,querySelectorAll:()=>[]};
 const event=(id,type,datetime,location='outside')=>({id,type,datetime,location,deletedAt:null,note:''});
 const events=[
   event('wee-accident','wee','2026-10-20T08:00','inside'),
