@@ -56,7 +56,7 @@ function renderCare(events,now=new Date()) {
       return `<button class="care-mark ${item.projected?'projected '+state.state:'actual'}" ${item.projected?'data-care-source':'data-id'}="${escapeHTML(item.id)}" style="left:${x}%;top:${lane*36}px" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"><span>${symbols[item.category]}</span></button>`;
     });
     const current=month===localDate(now).slice(0,7),last=new Date(Number(month.slice(0,4)),Number(month.slice(5)),0).getDate();
-    return `<div class="care-month${current?' current-month':''}"><strong>${careMonthLabel(month)}</strong><div class="care-month-body"><div class="care-days"><span>1</span><span>Day of month</span><span>${last}</span></div><div class="care-month-plot" style="height:${Math.max(1,occupied.length)*36}px">${current?`<span class="care-today" style="left:${careDayPosition(localDate(now))}%" aria-label="Today ${careFullDate(localDate(now))}"></span>`:''}${marks.join('')}</div></div></div>`;
+    return `<div class="care-month${current?' current-month':''}"><strong>${careMonthLabel(month)}</strong><div class="care-month-body"><div class="care-days"><span>1</span><span>${current?'':'Day of month'}</span><span>${last}</span></div><div class="care-month-plot" style="height:${Math.max(1,occupied.length)*36}px">${current?`<span class="care-today" style="left:${careDayPosition(localDate(now))}%" aria-label="Today ${careFullDate(localDate(now))}"><span class="care-today-label" style="transform:translateX(${careDayPosition(localDate(now))>80?'-100%':careDayPosition(localDate(now))<20?'0':'-50%'})" aria-hidden="true">Today</span></span>`:''}${marks.join('')}</div></div></div>`;
   }).join('');
   $('care-history').innerHTML=history.map(e=>`<p><button data-id="${escapeHTML(e.id)}">${escapeHTML(careFullDate(dateOf(e)))} ${e.datetime.slice(11,16)} · ${escapeHTML(details(e))}</button> ${escapeHTML(e.note)}</p>`).join('') || '<p class="muted">No care recorded yet.</p>';
   renderCareDetail(projected);
@@ -836,7 +836,7 @@ function render(now=new Date()) {
   });
   for (const page of ['home','toileting','care','weight','data']) $(`${page}-page`).hidden = activePage !== page;
   renderHeader(allEvents,now); renderHeader(allEvents,now,'toileting-summary'); renderAggregate(allEvents,now);
-  renderTimeline(events,allEvents,now);
+  renderTimeline(allEvents.slice().sort((a,b)=>b.datetime.localeCompare(a.datetime)),allEvents,now);
   renderTimeline(allEvents,allEvents,now,'today-timeline',true);
   renderCare(allEvents,now); renderTable(events); renderStats(allEvents,now); renderWeight(weightSummary(allEvents));
   if (activePage==='toileting') {renderTimingChart(allEvents,now);renderTrends(allEvents,now);}
@@ -845,7 +845,6 @@ function render(now=new Date()) {
 
 function selectPage(page) {
   activePage = page;
-  if (page === 'toileting' && ['weight','care'].includes(activeFilter)) activeFilter = 'all';
   render();
 }
 
@@ -853,7 +852,7 @@ async function quickAdd(type, location = 'outside') {
   const event = {id:uniqueId(),type,datetime:localDatetime(new Date()),note:'', ...eventMetadata()};
   if (type === 'meal') {event.mealFood = ''; event.mealAmount = '';}
   else {event.location = location; if (type === 'poo') event.pooConsistency = 'Normal';}
-  const visible = activePage === 'home' || activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
+  const visible = activePage !== 'data' || activeFilter === 'all' || activeFilter === type || (activeFilter === 'accidents' && accident(event));
   if (await commit(events => [...events,event])) notify(`${location === 'inside' && type !== 'meal' ? 'Inside '+type : titleCase(type)} saved at ${event.datetime.slice(11,16)}${visible ? '' : ' · hidden by current filter'}`);
 }
 

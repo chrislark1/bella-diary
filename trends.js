@@ -1,5 +1,12 @@
 'use strict';
 let trendView='frequency';
+const TREND_SERIES=[{name:'Wee',color:'#c89925',dash:''},{name:'Poo',color:'#866044',dash:'5 3'}];
+function trendMarker(series,x,y,size=2.5) {
+  const style=TREND_SERIES[series];
+  return series===0?`<circle cx="${x}" cy="${y}" r="${size}" fill="${style.color}"/>`:`<path d="M${x} ${y-size} L${x+size} ${y} L${x} ${y+size} L${x-size} ${y} Z" fill="${style.color}"/>`;
+}
+function trendSwatch(series) {const style=TREND_SERIES[series];return `<svg width="28" height="14" viewBox="0 0 28 14" aria-hidden="true"><path d="M1 7 H27" stroke="${style.color}" stroke-width="2.5" stroke-dasharray="${style.dash}"/>${trendMarker(series,14,7,3)}</svg>`;}
+
 // Completed calendar days only: missing logged days count as zero for frequency.
 // Medians keep the diary's minimum of three qualifying observations.
 function toiletingTrends(events,now=new Date()) {
@@ -29,12 +36,25 @@ function renderTrends(events=activeEvents(),now=new Date()) {
   $('trend-description').textContent=descriptions[trendView];if(ordered)return;
   const points=toiletingTrends(events,now),values=points.flatMap(p=>p[trendView]).filter(v=>v!==null);
   if(!values.length){$('trend-plot').innerHTML='<p class="empty">Not enough completed history for this 7-day trend yet.</p>';return;}
-  const W=640,H=280,L=65,R=20,T=20,B=45,max=trendView==='morning'?Math.min(1440,Math.ceil(Math.max(...values)/30)*30+30):Math.max(...values,1)*1.1,min=trendView==='morning'?Math.max(0,Math.floor(Math.min(...values)/30)*30-30):0;
+  const W=Math.max(320,$('trend-plot').clientWidth||640),H=280,L=65,R=20,T=20,B=45,max=trendView==='morning'?Math.min(1440,Math.ceil(Math.max(...values)/30)*30+30):Math.max(...values,1)*1.1,min=trendView==='morning'?Math.max(0,Math.floor(Math.min(...values)/30)*30-30):0;
   const x=i=>L+(points.length===1?.5:i/(points.length-1))*(W-L-R),y=v=>T+(1-(v-min)/(max-min))*(H-T-B);
   const format=v=>trendView==='morning'?clockTime(v):trendView==='frequency'?v.toFixed(1):compactDuration(v);
   let svg='';for(let i=0;i<=4;i++){const v=min+(max-min)*i/4;svg+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" class="chart-grid"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end" class="chart-axis-label">${format(v)}</text>`;}
-  for(let series=0;series<points[0][trendView].length;series++){let path='',connected=false;points.forEach((p,i)=>{const v=p[trendView][series];if(v===null){connected=false;return;}path+=`${connected?'L':'M'}${x(i)} ${y(v)} `;connected=true;svg+=`<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="${series?'#866044':'#c89925'}"><title>${p.date}: ${series?'Poo':'Wee'} ${format(v)}</title></circle>`;});svg+=`<path d="${path}" fill="none" stroke="${series?'#866044':'#c89925'}" stroke-width="2.5"/>`;}
+  const endpoints=[];
+  for(let series=0;series<points[0][trendView].length;series++) {
+    const style=TREND_SERIES[series];let path='',connected=false,last=null;
+    points.forEach((p,i)=>{const v=p[trendView][series];if(v===null){connected=false;return;}path+=`${connected?'L':'M'}${x(i)} ${y(v)} `;connected=true;last={x:x(i),y:y(v),value:v,date:p.date,series};svg+=`<g><title>${p.date}: ${style.name} ${format(v)}</title>${trendMarker(series,x(i),y(v))}</g>`;});
+    svg+=`<path d="${path}" fill="none" stroke="${style.color}" stroke-width="2.5" stroke-dasharray="${style.dash}"/>`;
+    if(last)endpoints.push(last);
+  }
+  const occupied=[];
+  for(const point of endpoints){
+    const style=TREND_SERIES[point.series],label=format(point.value)+(trendView==='frequency'?' / day':''),width=label.length*7.5+14,height=24;
+    const box=placeChartEndpointLabel(point,width,height,{left:L,right:Math.max(L+width+8,Math.min(W-R,point.x)),top:T,bottom:H-B},occupied);occupied.push(box);
+    svg+=`<g class="trend-endpoint" data-series="${style.name}" data-value="${point.value}" role="img" aria-label="${style.name}, latest plotted value ${label}, ${point.date}"><line x1="${point.x}" y1="${point.y}" x2="${box.x+box.width}" y2="${box.centerY}" stroke="${style.color}" stroke-width="1"/><rect x="${box.x}" y="${box.y}" width="${box.width}" height="${height}" rx="4" fill="#fffef9" stroke="${style.color}"/><text x="${box.x+7}" y="${box.centerY+4}" fill="#293c30" font-size="12">${label}</text></g>`;
+  }
   for(const i of new Set([0,Math.floor((points.length-1)/2),points.length-1]))svg+=`<text x="${x(i)}" y="${H-20}" text-anchor="${points.length===1?'middle':i===0?'start':i===points.length-1?'end':'middle'}" class="chart-axis-label">${points[i].date}</text>`;
-  $('trend-plot').innerHTML=`<p class="muted">● Gold: Wee${points[0][trendView].length===2?' · Brown: Poo':''} · ${trendView==='frequency'?'events / day':trendView==='morning'?'clock time':'duration'}</p><svg class="trend-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${descriptions[trendView]}">${svg}</svg>`;
+  $('trend-plot').innerHTML=`<div class="trend-legend">${TREND_SERIES.slice(0,points[0][trendView].length).map((style,i)=>`<span>${trendSwatch(i)}${style.name}</span>`).join('')}<span class="muted">${trendView==='frequency'?'events / day':trendView==='morning'?'clock time':'duration'}</span></div><svg class="trend-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${descriptions[trendView]}">${svg}</svg>`;
+
 }
 function connectTrends(){const buttons=[...document.querySelectorAll('[data-trend]')];const select=i=>{trendView=buttons[i].dataset.trend;renderTrends();};buttons.forEach((b,i)=>{b.addEventListener('click',()=>select(i));b.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?4:(i+(e.key==='ArrowRight'?1:4))%5;select(next);buttons[next].focus();});});$('detailed-timing').addEventListener('toggle',()=>{if($('detailed-timing').open)renderTimingChart(activeEvents());});}
