@@ -348,7 +348,7 @@ function markHTML(event) {
   return `<button class="event-mark event-mark-${event.type}" data-id="${escapeHTML(event.id)}" style="left:${position(event)}%" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}">${inner}</button>`;
 }
 
-function renderHeader(events, now = new Date()) {
+function renderHeader(events, now = new Date(), targetId = 'summary') {
   events=events.filter(isToiletingEvent);
   const stats = statistics(events,now);
   const freeTime=accidentFreeTime(events,now);
@@ -371,7 +371,7 @@ function renderHeader(events, now = new Date()) {
     {className:'decision-metric mobile-only-metric',value:compactDuration(accidentElapsed),description:'Since last accident',median:rate7d,aria:`Time since last accident: ${spokenDuration(accidentElapsed)}. ${rate7dAria}`},
     {value:freeTime.value,label:'Accident-free',aria:freeTime.aria}
   ];
-  $('summary').innerHTML = metrics.map(metric => `<div class="metric${metric.className?' '+metric.className:''}" aria-label="${escapeHTML(metric.aria+(metric.accident?' Latest event was an inside accident.':''))}"><strong>${metric.value}${metric.accident?'<i class="accident-example header-accident" aria-hidden="true" title="Latest event was an inside accident">!</i>':''}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
+  $(targetId).innerHTML = metrics.map(metric => `<div class="metric${metric.className?' '+metric.className:''}" aria-label="${escapeHTML(metric.aria+(metric.accident?' Latest event was an inside accident.':''))}"><strong>${metric.value}${metric.accident?'<i class="accident-example header-accident" aria-hidden="true" title="Latest event was an inside accident">!</i>':''}</strong>${metric.description ? `<span class="metric-description">${escapeHTML(metric.description)}</span><span class="metric-median">${escapeHTML(metric.median)}</span>` : `<span>${escapeHTML(metric.label)}</span>`}</div>`).join('');
 }
 
 function bucketDistribution(events, type, trackedDays, binMinutes = activeBinSize, {distinctDays = false} = {}) {
@@ -499,13 +499,14 @@ function empiricalPercentilePosition(values,value) {
   return values.length?values.filter(candidate=>candidate<=value).length/values.length*100:null;
 }
 
+function isOvernightObservation({startEvent:a,endEvent:b}) {return previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START;}
 function statistics(events,now=new Date()) {
   events=events.filter(isToiletingEvent);
   const sorted = [...events].sort((a,b) => a.datetime.localeCompare(b.datetime));
   const dates = [...new Set(events.map(dateOf))];
   const observations=timingObservations(events);
   const daytime = observations.wee.filter(({startEvent:a,endEvent:b}) => dateOf(a) === dateOf(b) && minutesOf(a) >= DAY_START && minutesOf(b) <= DAY_END).map(item=>item.minutes);
-  const overnight = observations.wee.filter(({startEvent:a,endEvent:b}) => previousDate(dateOf(b)) === dateOf(a) && minutesOf(a) >= DAY_END && minutesOf(b) <= DAY_START).map(item=>item.minutes);
+  const overnight = observations.wee.filter(({startEvent:a,endEvent:b}) => isOvernightObservation({startEvent:a,endEvent:b})).map(item=>item.minutes);
   const firsts = type => dates.map(date => sorted.find(event => event.type === type && dateOf(event) === date)).filter(Boolean).map(minutesOf);
   const meals = sorted.filter(event => event.type === 'meal');
   const mealTimes = [[],[],[]];
@@ -834,11 +835,11 @@ function render(now=new Date()) {
 
   });
   for (const page of ['home','toileting','care','weight','data']) $(`${page}-page`).hidden = activePage !== page;
-  renderHeader(allEvents,now); renderAggregate(allEvents,now);
+  renderHeader(allEvents,now); renderHeader(allEvents,now,'toileting-summary'); renderAggregate(allEvents,now);
   renderTimeline(events,allEvents,now);
   renderTimeline(allEvents,allEvents,now,'today-timeline',true);
   renderCare(allEvents,now); renderTable(events); renderStats(allEvents,now); renderWeight(weightSummary(allEvents));
-  if (activePage==='toileting') renderTimingChart(allEvents,now);
+  if (activePage==='toileting') {renderTimingChart(allEvents,now);renderTrends(allEvents,now);}
   document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.filter === activeFilter)));
 }
 
@@ -923,6 +924,7 @@ async function importJSON(file) {
 }
 
 function connectEvents() {
+  connectTrends();
   try {const savedWindow = localStorage.getItem(WINDOW_KEY); if (['7','14','30','all'].includes(savedWindow)) activeWindow = savedWindow;} catch {}
   // Recalculate the default from the current diary on every load. In-session
   // selector changes still take effect until the next load.
@@ -994,7 +996,7 @@ function connectEvents() {
   document.addEventListener('visibilitychange',() => {if (!document.hidden) refreshStore();});
   // Refresh today's counts when the local calendar date changes while open.
   let lastDate = localDate(new Date());
-  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);if(activePage==='toileting'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
+  setInterval(() => {const now = new Date(), date = localDate(now); if (date !== lastDate) {lastDate = date; render(now);} else {const events=activeEvents();renderHeader(events,now);renderHeader(events,now,'toileting-summary');if(activePage==='toileting'){renderStats(events,now);renderTimingChart(events,now);}updateNowMarker(now);}},60000);
 }
 
 const RULES = '<p>Statistics use the entire diary, independently of the view filter, except accident percentages: these use the rolling last 7 days. Each percentage divides inside accidents by all recorded wees or poos in that period. Frequencies divide totals by the number of dates with entries and need at least three tracked dates. A dash means there is not enough data.</p><p>The primary accident rate uses the trailing 7 days, normalized to accidents per 24 hours. It appears only after the diary has a full 7-day history window and updates as events age out. The median wee accident gap in Toileting statistics and Ordered view is the overall historical median; the Over-time trend is the median of the last 5 completed gaps.</p><p>Accident-free time shows completed days and hours since the latest recorded inside wee or poo, or since the first diary entry if no accident is recorded. It measures time since recorded events, not proof that unrecorded time was accident-free. Future entries are excluded.</p><p>Intervals use actual elapsed minutes between consecutive wees and poos; zero-length gaps and gaps over 24 hours are excluded. Wee intervals start only at an outdoor wee; an inside accident can end the interval but never starts another. Daytime gaps have both endpoints on the same day between 06:00 and 22:00. Overnight gaps run from 22:00 or later to 06:00 or earlier on the next date. Other gaps count only towards the overall median. Interval medians and longest gaps need three qualifying examples.</p><p>Wee accident gap measures elapsed time between consecutive indoor wee accidents. It has no 24-hour upper cutoff because longer accident-free periods are meaningful. Its Over-time trend uses the median of up to the last 5 completed gaps, requiring at least three observations. Ordinary trends retain their preceding 72-hour median. All selected series share one duration axis. Use the checkboxes to compare any combination of series.</p><p>First-event times use a median of at least three days. Typical meals are the medians of the first, second and third meals on days with exactly three meals; each needs three days. Meal-to-toilet medians use the next wee within 6 hours or the first poo after the most recent unpaired meal within 12 hours; each poo is used at most once. At least three qualifying examples are required. These are diary heuristics.</p>';

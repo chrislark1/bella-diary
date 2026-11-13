@@ -223,3 +223,4 @@ header .header-tools{grid-column:2;grid-row:1}
 /* Toileting owns its four recording controls. */
 @media(min-width:641px){#toileting-page .quick{grid-template-columns:1.3fr 1.3fr 1fr 1fr}}
 @media(max-width:640px){#toileting-page .quick>button{grid-column:span 3}}
+#timeline{max-height:284px;overflow-y:auto;scrollbar-gutter:stable}#timeline>.axis-row{position:sticky;top:0;background:#fffef9;z-index:3}.trend-svg{width:100%;height:auto;display:block}#trend-tabs{margin:12px 0;display:flex;flex-wrap:wrap}#trend-tabs button{flex:1;min-height:44px;padding-inline:8px}#toileting-summary{justify-content:space-between;margin-block:12px}#detailed-slot:empty{display:none}@media(min-width:700px) and (max-height:850px) and (orientation:landscape){#timeline{max-height:238px}}

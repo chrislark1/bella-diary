@@ -330,7 +330,7 @@ async function run() {
   // instead of treating that old controller as proof of the current precache.
   await navigator.serviceWorker.register(`/sw.js?acceptance=${Date.now()}`);
   await navigator.serviceWorker.ready;
-  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
+  const required=['/','/index.html','/styles.css','/storage.js','/app.js','/trends.js','/supabase-config.js','/auth.js','/cloud-diagnostic.js','/sync.js','/manifest.json','/icons/favicon.svg','/icons/icon-192.png','/icons/icon-512.png'];
   const shellVersion=(await (await fetch('../sw.js')).text()).match(/const CACHE = '([^']+)'/)[1];
   await waitFor(async()=>{const cache=await caches.open(shellVersion);const paths=(await cache.keys()).map(request=>new URL(request.url).pathname);return required.every(path=>paths.includes(path));},'current shell precache completes');
   const cache=await caches.open(shellVersion), keys=(await cache.keys()).map(request=>new URL(request.url).pathname);

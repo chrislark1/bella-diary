@@ -13,6 +13,7 @@
   <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="storage.js" defer></script>
+  <script src="trends.js" defer></script>
   <script src="app.js" defer></script>
   <script src="supabase-config.js" defer></script>
   <script src="auth.js" defer></script>
@@ -35,24 +36,27 @@
   </section>
   <section id="toileting-page" role="tabpanel" aria-labelledby="toileting-page-tab">
   <section class="quick" aria-label="Add an event"><div class="quick-pair"><button data-add="wee"><span class="symbol wee"></span> + Wee</button><button data-add="wee" data-location="inside" class="inside-add" aria-label="Record an inside wee accident" title="Record an inside wee accident"><span class="inside-label">Inside</span><span class="accident-example" aria-hidden="true">!</span></button></div><div class="quick-pair"><button data-add="poo"><span class="symbol poo"></span> + Poo</button><button data-add="poo" data-location="inside" class="inside-add" aria-label="Record an inside poo accident" title="Record an inside poo accident"><span class="inside-label">Inside</span><span class="accident-example" aria-hidden="true">!</span></button></div><button data-add="meal"><span class="symbol meal"></span> + Meal</button><button id="custom">Custom entry</button></section>
+  <section class="home-state"><h2>Toileting now</h2><div id="toileting-summary" class="summary"></div></section>
   <section class="diary-surface">
-    <div class="section-heading"><div class="section-title-controls"><h2>Timing Summary</h2><div class="aggregate-controls"><label for="aggregate-window">Window</label><select id="aggregate-window" aria-label="Pattern time window"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option><option value="all">All time</option></select><label for="aggregate-bin-size">Bins</label><select id="aggregate-bin-size" aria-label="Timing summary bucket size"><option value="30">30 min</option><option value="60" selected>60 min</option><option value="90">90 min</option><option value="120">120 min</option></select></div></div><span id="aggregate-count" class="muted aggregate-count"></span></div>
-    <p class="muted bucket-help">Darker = more activity than other times for that row. Accidents are shaded by affected days. Tap a bucket for details.</p>
-    <div id="aggregate"></div>
     <div class="diary-heading"><h2>Toileting history</h2><div id="filters" data-event-filters class="filters" aria-label="Filter toileting history"><button data-filter="all" aria-pressed="true">All</button><button data-filter="wee" aria-pressed="false">Wees</button><button data-filter="poo" aria-pressed="false">Poos</button><button data-filter="meal" aria-pressed="false">Meals</button><button data-filter="accidents" aria-pressed="false">Accidents</button></div></div>
     <div class="legend"><span><i class="symbol wee"></i> Wee</span><span><i class="symbol poo"></i> Poo</span><span><i class="symbol meal"></i> Meal</span><span><i class="accident-example">!</i> Inside accident</span><span class="muted">Tap an event to edit</span></div>
-    <div id="timeline"></div>
+    <div id="timeline" tabindex="0" role="region" aria-label="Toileting history"></div>
   </section>
+  <section class="patterns" id="trend-carousel" aria-label="Toileting trends"><h2>Toileting trends</h2><div id="trend-tabs" class="tabs" role="tablist" aria-label="Trend view"><button id="trend-frequency" data-trend="frequency" role="tab" aria-controls="trend-panel" aria-selected="true" tabindex="0">Frequency</button><button id="trend-gaps" data-trend="gaps" role="tab" aria-controls="trend-panel" aria-selected="false" tabindex="-1">Gaps</button><button id="trend-morning" data-trend="morning" role="tab" aria-controls="trend-panel" aria-selected="false" tabindex="-1">Morning</button><button id="trend-overnight" data-trend="overnight" role="tab" aria-controls="trend-panel" aria-selected="false" tabindex="-1">Overnight</button><button id="trend-ordered" data-trend="ordered" role="tab" aria-controls="trend-panel" aria-selected="false" tabindex="-1">Ordered</button></div><div id="trend-panel" role="tabpanel" aria-labelledby="trend-frequency"><p id="trend-description" class="muted"></p><div id="trend-plot"></div><div id="ordered-slot"></div></div></section>
   <section class="patterns" aria-label="Toileting analysis">
     <h2>Toileting analysis</h2>
     <p class="muted">The primary accident rate uses a rolling 7-day window, normalized per 24 hours, and updates as older events leave the window. Median wee accident gap remains a separate descriptive metric.</p>
-    <section class="timing-chart" aria-label="Toileting timing charts">
+    <details id="detailed-timing"><summary>Detailed timing and accident analysis</summary><div id="detailed-slot"><section class="timing-chart" aria-label="Toileting timing charts">
       <div id="timing-chart-panel">
         <div class="chart-toolbar timing-chart-toolbar"><h4 id="timing-chart-title">Timing observations</h4><div id="timing-chart-controls" class="chart-controls"><div class="chart-filters" role="group" aria-label="Timing series"><label><input type="checkbox" data-chart-filter="wee" checked> <i class="symbol wee" aria-hidden="true"></i> Wee</label><label><input type="checkbox" data-chart-filter="poo" checked> <i class="symbol poo" aria-hidden="true"></i> Poo</label><label><input type="checkbox" data-chart-filter="meal-poo"> <i class="symbol meal" aria-hidden="true"></i> Meal → poo</label><label><input type="checkbox" data-chart-filter="wee-accident"> <i class="accident-example" aria-hidden="true">!</i> Accidents</label></div><div class="tabs chart-views" role="group" aria-label="Chart view"><button type="button" data-chart-view="over-time" aria-pressed="true">Over time</button><button type="button" data-chart-view="ordered" aria-pressed="false">Ordered</button></div></div></div>
         <div class="chart-legend" aria-label="Series legend"><span><i class="symbol wee"></i> Wee gap</span><span><i class="symbol poo"></i> Poo gap</span><span><i class="symbol meal"></i> Meal → poo</span><span><i class="accident-example" aria-hidden="true">!</i> Completed wee accident gap</span><span><i class="open-accident-example" aria-hidden="true">!</i> Current gap</span><span><i class="chart-rate-example" aria-hidden="true"></i> Accident rate</span></div><p class="muted chart-explanation">Wee accident-gap trend = median of last 5 completed gaps. Filled ! = completed gap; hollow ! = current gap so far. Dashed rate = trailing 7 days (right axis). Ordered view uses the overall distribution and median.</p><div id="timing-chart-plot"></div><p id="timing-point-detail" class="chart-point-detail" role="status" aria-live="polite">Hover over, tap or focus a point to inspect its events.</p>
       </div>
 
     </section>
+    </div></details>
+    <div class="section-heading"><div class="section-title-controls"><h2>Timing Summary</h2><div class="aggregate-controls"><label for="aggregate-window">Window</label><select id="aggregate-window" aria-label="Pattern time window"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option><option value="all">All time</option></select><label for="aggregate-bin-size">Bins</label><select id="aggregate-bin-size" aria-label="Timing summary bucket size"><option value="30">30 min</option><option value="60" selected>60 min</option><option value="90">90 min</option><option value="120">120 min</option></select></div></div><span id="aggregate-count" class="muted aggregate-count"></span></div>
+    <p class="muted bucket-help">Darker = more activity than other times for that row. Accidents are shaded by affected days. Tap a bucket for details.</p>
+    <div id="aggregate"></div>
     <h2 class="numeric-stats-title">Toileting statistics</h2><div id="stats" class="stats"></div><details><summary>How these numbers work</summary><div id="rules"></div></details>
   </section>
   </section>
