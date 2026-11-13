@@ -831,8 +831,9 @@ function render(now=new Date()) {
   document.querySelectorAll('[data-page]').forEach(button => {
     const selected = button.dataset.page === activePage;
     button.setAttribute('aria-selected',String(selected)); button.tabIndex = selected ? 0 : -1;
-    $(button.getAttribute('aria-controls')).hidden = !selected;
+
   });
+  for (const page of ['home','toileting','care','weight','data']) $(`${page}-page`).hidden = activePage !== page;
   renderHeader(allEvents,now); renderAggregate(allEvents,now);
   renderTimeline(events,allEvents,now);
   renderTimeline(allEvents,allEvents,now,'today-timeline',true);
