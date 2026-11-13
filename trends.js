@@ -13,7 +13,7 @@ function toiletBoundaryObservation(events,date) {
   const boundary=new Date(date+'T02:00');
   const toilets=events.filter(e=>e.type==='wee'||e.type==='poo');
   const before=toilets.filter(e=>new Date(e.datetime)<boundary).at(-1)||null;
-  const after=toilets.find(e=>new Date(e.datetime)>=boundary)||null;
+  const after=toilets.find(e=>new Date(e.datetime)>=boundary&&dateOf(e)===date)||null;
   return {before,after,morning:after?minutesOf(after):null,overnight:before&&after?(Date.parse(after.datetime)-Date.parse(before.datetime))/60000:null};
 }
 function toiletingTrends(events,now=new Date()) {
@@ -26,9 +26,12 @@ function toiletingTrends(events,now=new Date()) {
     const date=localDate(day),begin=new Date(day);begin.setDate(begin.getDate()-6);const from=localDate(begin);
     const days=[];for(let d=new Date(begin);localDate(d)<=date;d.setDate(d.getDate()+1))days.push(daily.get(localDate(d))||[]);
     const inWindow=o=>dateOf(o.endEvent)>=from&&dateOf(o.endEvent)<=date;
-    const observation=toiletBoundaryObservation(real,date),morning=observation.morning,duration=observation.overnight;
-    const morningValues=[],overnightValues=[];
-    for(const candidate of result.slice(-6).concat([{morning:[morning],overnight:[duration]}])){if(candidate.morning[0]!==null)morningValues.push(candidate.morning[0]);if(candidate.overnight[0]!==null)overnightValues.push(candidate.overnight[0]);}
+    const observation=toiletBoundaryObservation(real,date),morning=observation.morning,duration=observation.overnight,boundary=new Date(date+'T02:00');
+    const windowStart=new Date(date+'T12:00');windowStart.setDate(windowStart.getDate()-6);
+    const boundaryWindowStart=new Date(localDate(windowStart)+'T02:00');
+    const boundaryObservations=[];
+    for(let boundaryDate=new Date(boundaryWindowStart);boundaryDate<=boundary;boundaryDate.setDate(boundaryDate.getDate()+1))boundaryObservations.push(toiletBoundaryObservation(real,localDate(boundaryDate)));
+    const morningValues=boundaryObservations.map(o=>o.morning).filter(v=>v!==null),overnightValues=boundaryObservations.map(o=>o.overnight).filter(v=>v!==null);
     result.push({date,frequency:['wee','poo'].map(type=>days.reduce((n,d)=>n+d.filter(e=>e.type===type).length,0)/7),gaps:['wee','poo'].map(type=>median(obs[type].filter(inWindow).map(o=>o.minutes))),morning:[median(morningValues)],overnight:[median(overnightValues)]});
   }return result;
 }
