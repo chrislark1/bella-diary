@@ -17,8 +17,8 @@ async function careTimelineChecks() {
   check([...d.querySelectorAll('.care-mark')].every(mark=>/completed|projected due/.test(mark.getAttribute('aria-label'))),'Care timeline: all markers identify actual/projected date accessibly');
   check(new Set([...d.querySelectorAll('.care-mark.actual')].map(mark=>mark.style.top)).size===6,'Care timeline: same-day events have distinct deterministic lanes');
   check(w.eval("careDayPosition('2026-11-01')===.5/30*100&&careDayPosition('2026-11-30')===29.5/30*100"),'Care timeline: first and last days use the same month scale');
-  await click(frame,'#home-page-tab');await click(frame,'#home-care-items button');
-  check(!d.getElementById('care-page').hidden&&!d.getElementById('care-detail').hidden&&d.activeElement.id==='care-detail','Care timeline: Home opens and focuses projected details');
+  w.eval("selectPage('home')");await click(frame,'#home-care-items button');
+  check(!d.getElementById('care-page').hidden&&!d.getElementById('care-detail').hidden&&d.getElementById('editor').open&&d.activeElement===d.getElementById('event-form').elements.nextDue,'Care timeline: Home opens Care details and focuses the shared due-date editor');
   await click(frame,'#adjust-care-due');d.getElementById('event-form').elements.nextDue.value=date(30);await click(frame,'#event-form button[type="submit"]');
   check(state(frame).events.length===before.events.length&&state(frame).events[0].nextDue===date(30)&&state(frame).events[0].mutationId!==before.events[0].mutationId,'Care timeline: override edits the source actual with normal mutation metadata');
   await click(frame,'#complete-care');await click(frame,'#event-form button[type="submit"]');

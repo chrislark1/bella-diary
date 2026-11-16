@@ -124,13 +124,15 @@ check('weight chart uses whole-kilogram y-axis labels',()=>{
   assert.deepEqual(labels,['5','7','9','14 Oct','19 Oct','25 Oct']);
   assert.ok(labels.slice(0,3).every(label=>Number.isInteger(Number(label))));
 });
-check('five domain tabs replace the mixed Stats destination',()=>{
-  assert.deepEqual([...html.matchAll(/data-page="([^"]+)"/g)].map(match=>match[1]),['home','toileting','care','weight','data']);
+check('four visible domain tabs keep Toileting first while Home remains implemented but hidden',()=>{
+  assert.deepEqual([...html.matchAll(/data-page="([^"]+)"/g)].map(match=>match[1]),['toileting','care','weight','data']);
   assert.doesNotMatch(html,/stats-page|stats-chart-tabs|data-stats-chart/);
-  for(const page of ['home','toileting','care','weight','data']) {
+  for(const page of ['toileting','care','weight','data']) {
     assert.ok(html.includes(`aria-controls="${page}-page"`));
     assert.ok(html.includes(`role="tabpanel" aria-labelledby="${page}-page-tab"`));
   }
+  assert.match(html,/<section id="home-page" role="tabpanel" aria-label="Home" hidden>/);
+  assert.match(source,/activePage = 'toileting'/);
 });
 check('no recent accidents show zero and the mobile metric no longer displays an accident-gap median',()=>{
   app.fixture=events.slice(0,3);
@@ -139,7 +141,7 @@ check('no recent accidents show zero and the mobile metric no longer displays an
   assert.doesNotMatch(metric(summary.innerHTML,'Since last accident')[2],/median/i);
 });
 check('existing minute refresh updates elapsed time and rolling rate without changing events',()=>{
-  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);if\(activePage==='toileting'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
+  assert.match(source,/setInterval\(\(\) => \{const now = new Date\(\), date = localDate\(now\); if \(date !== lastDate\) \{lastDate = date; render\(now\);\} else \{const events=activeEvents\(\);renderHeader\(events,now\);renderHeader\(events,now,'toileting-summary'\);if\(activePage==='toileting'\)\{renderStats\(events,now\);renderTimingChart\(events,now\);renderTrends\(events,now\);\}updateNowMarker\(now\);\}\},60000\)/);
   const boundaryEvents=[event('history','meal','2026-10-04T12:15'),event('ages-out','wee','2026-10-07T12:15','inside')],before=JSON.stringify(boundaryEvents);
   const first=render(new Date('2026-10-14T12:15:00'),boundaryEvents);
   const elapsed1=metric(first,'Since last accident')[1];
